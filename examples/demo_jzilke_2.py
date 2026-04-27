@@ -25,8 +25,8 @@ from share.teleoperators.spacemouse import SpaceMouseConfig
 # Set this to a safe pose for your robot in world coordinates:
 # [x, y, z, rx, ry, rz]
 START_POSE = [-0.5, -0.0, 0.52, -3.0, 0.2, -1.4]
-TARGET_1 = [-0.450, 0.114, 0.231, -2.0, 1.2, -1.4]
-TARGET_2 = [-0.450, 0.114, 0.231, -2.0, 1.2, -1.4]
+TARGET_UR3 = [-0.3232706776223777, -0.2579981466756967, 0.3477962169855162, 2.2205149081397813, -0.18851901719037523, -1.328941890818592]
+TARGET_UR3_2 = [-0.3232706776223777, -0.2579981466756967, 0.3477962169855162, 2.2205149081397813, -0.18851901719037523, -1.328941890818592]
 
 TARGET_TEST = [-0.429, 0.126, 0.261, 3.112, 0.068, -2.14]
 TARGET_TEST_2 = [-0.429, 0.026, 0.261, 3.112, 0.068, -2.14]
@@ -36,7 +36,7 @@ TARGET_TEST_2 = [-0.429, 0.026, 0.261, 3.112, 0.068, -2.14]
 home_cfg = ManipulationPrimitiveConfig(
     notes="Move to a known safe start pose.",
     task_frame=TaskFrame(
-        target=TARGET_TEST,
+        target=TARGET_UR3,
         policy_mode=[None] * 6,
         control_mode=[ControlMode.POS] * 6,
     ),
@@ -45,7 +45,7 @@ home_cfg = ManipulationPrimitiveConfig(
 target_cfg = ManipulationPrimitiveConfig(
     notes="Target",
     task_frame=TaskFrame(
-        target=TARGET_TEST_2,
+        target=TARGET_UR3_2,
         policy_mode=[None] * 6,
         control_mode=[ControlMode.POS] * 6,
     )
@@ -70,7 +70,7 @@ teleop_primitive = ManipulationPrimitiveConfig(
         gripper=GripperConfig(enable=False),
         events=EventConfig(
             foot_switch_mapping={
-                (TeleopEvents.SUCCESS,): {"device": 4, "toggle": False},
+                (TeleopEvents.SUCCESS,): {"device": 20, "toggle": False},
             },
         ),
     ),
@@ -108,6 +108,8 @@ def run_demo(max_steps: int = 2_000) -> None:
     """Run until the robot reaches START_POSE + [0, 0, 0.10, 0, 0, 0]."""
     net = ManipulationPrimitiveNet(net_cfg)
     transition = net.reset()
+    print([float(transition[TransitionKey.OBSERVATION][k]) for k in
+           ['main.x.ee_pos', 'main.y.ee_pos', 'main.z.ee_pos', 'main.rx.ee_pos', 'main.ry.ee_pos', 'main.rz.ee_pos']])
 
     print(f"start -> {net.active_primitive}")
 

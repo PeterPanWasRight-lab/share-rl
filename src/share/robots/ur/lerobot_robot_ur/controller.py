@@ -1,4 +1,5 @@
 import collections
+import logging
 import math
 import gc
 import os
@@ -15,6 +16,8 @@ from scipy.spatial.transform import Rotation as R
 from share.envs.manipulation_primitive.task_frame import ControlMode, ControlSpace, PolicyMode, TaskFrame
 from share.utils.shared_memory import SharedMemoryRingBuffer, SharedMemoryQueue, Empty
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from share.robots.ur.lerobot_robot_ur.config_ur import URConfig
@@ -140,18 +143,19 @@ class _PerfWin:
 
 
 class RTDETaskFrameController(mp.Process):
-    """RTDE task-frame controller with per-axis modes and 6D impedance.
+    """RTDE task-frame controller with force or direct-pose task-space output.
 
     Runs a 1 kHz loop that:
       • Reads commands from shared memory (pose/vel/force modes per axis)
       • Estimates current state in the task frame
       • Integrates virtual targets (for IMPEDANCE_VEL)
-      • Computes and bounds a wrench, then applies it via `forceMode(...)`
+      • In force mode: computes and bounds a wrench, then applies `forceMode(...)`
+      • In simple pose mode: applies direct task-space pose commands via `servoL(...)`
 
     Notes:
         - Translation bounds are enforced directly; rotation bounds are applied
           in RPY space but the controller operates internally on rot-vectors.
-        - Automatically (re)enters `forceMode` as needed.
+        - `config.use_force_mode` selects force mode (`True`) or simple pose mode (`False`).
 
     Attributes:
         config (URConfig): Runtime configuration (RTDE IP, gains, limits, etc.).
@@ -231,6 +235,7 @@ class RTDETaskFrameController(mp.Process):
         self.min_pose = self._last_cmd.min_pose
         self._resolve_compliance_settings(**self._last_cmd.controller_overrides)
         self._active_space: ControlSpace | None = None
+        self._use_force_mode = bool(getattr(self.config, "use_force_mode", True))
 
     # =========== launch & shutdown =============
     def connect(self):
@@ -389,6 +394,48 @@ class RTDETaskFrameController(mp.Process):
         )
         self.force_on = True
 
+    def _task_pose_to_world_pose(self, pose_task: np.ndarray) -> np.ndarray:
+        """Convert a task-frame pose (rotvec) into a world-frame pose (rotvec)."""
+        T_world_task = self.sixvec_to_homogeneous(self.origin)
+        T_task_pose = self.sixvec_to_homogeneous(pose_task)
+        T_world_pose = T_world_task @ T_task_pose
+        return np.asarray(self.homogenous_to_sixvec(T_world_pose), dtype=np.float64)
+
+    def _send_task_pose(self, rtde_c, pose_task: np.ndarray, mode="moveL") -> None:
+        """Send a task-frame pose command without force mode."""
+        pose_world = self._task_pose_to_world_pose(pose_task)
+        # speed/acceleration are currently ignored by UR servoL, but keep valid values.
+        speed = float(np.clip(self.config.speed_limits[0], 1e-3, 1.5))
+        acceleration = float(np.clip(self.config.speed_limits[1], 1e-3, 3.14))
+        servo_time = float(max(self.config.simple_pose_servo_time, 1.0 / self.config.frequency))
+        lookahead_time = float(np.clip(self.config.simple_pose_lookahead_time, 0.03, 0.2))
+        gain = float(np.clip(self.config.simple_pose_gain, 100.0, 200.0))
+
+        speed = 0.05
+        acceleration = 0.1
+        lookahead_time = 0.2
+        gain=100
+
+        if mode == "servoL":
+            rtde_c.servoL(
+                pose_world.tolist(),
+                speed,
+                acceleration,
+                servo_time,
+                lookahead_time,
+                gain,
+            )
+        elif mode == "moveL":
+            rtde_c.moveL(
+                pose_world.tolist(),
+                speed,
+                acceleration,
+                False,
+            )
+
+        else:
+            raise AttributeError("RTDEControlInterface does not expose servoL/moveL")
+
     def _enter_task_force_mode(self, rtde_c) -> None:
         """Start forceMode once for task-space control."""
         rtde_c.forceModeSetGainScaling(self.config.force_mode_gain_scaling)
@@ -478,6 +525,8 @@ class RTDETaskFrameController(mp.Process):
 
             if new_space == ControlSpace.JOINT and np.any(new_control_mode != ControlMode.POS):
                 raise ValueError("UR joint-space control only supports POS axes")
+            if not self._use_force_mode and new_space == ControlSpace.TASK and np.any(new_control_mode != ControlMode.POS):
+                raise ValueError("Simple UR pose controller only supports task-space POS axes")
 
             for axis in range(6):
                 became_relative_pos = (
@@ -494,7 +543,7 @@ class RTDETaskFrameController(mp.Process):
 
             self.control_mode = new_control_mode.copy()
             self.delta_mode = new_delta_mode.copy()
-            if new_space == ControlSpace.TASK and not self.force_on:
+            if self._use_force_mode and new_space == ControlSpace.TASK and not self.force_on:
                 self._enter_task_force_mode(rtde_c)
 
         return keep_running, active_space, x_cmd, q_cmd
@@ -642,15 +691,14 @@ class RTDETaskFrameController(mp.Process):
 
         Steps:
             1) Configure RT scheduling (optional) and connect RTDE.
-            2) Initialize `forceMode` and virtual targets.
+            2) Initialize virtual targets.
             3) Loop at `config.frequency`:
                - Drain and apply queued `TaskFrameCommand`s
                - Read current state and write it to the ring buffer
                - Update the virtual task-frame pose
-               - Compute per-axis wrench from mode/targets/gains
-               - Clamp wrench using pose bounds and contact-aware scaling
-               - Apply wrench via `forceMode`
-            4) On shutdown, stop force mode and disconnect cleanly.
+               - Force mode: compute bounded wrench and apply `forceMode`
+               - Simple pose mode: send direct task-frame pose via `servoL`
+            4) On shutdown, stop active RTDE control mode and disconnect cleanly.
 
         Absolute rotational pose targets are interpreted as XYZ roll-pitch-yaw
         angles [rad] at the interface and converted internally to rotation vectors.
@@ -862,12 +910,13 @@ class RTDETaskFrameController(mp.Process):
                 wrench_F = np.zeros(6, dtype=np.float64)
                 torque_cmd = np.zeros(6, dtype=np.float64)
                 if active_space == ControlSpace.TASK:
-                    wrench_F = self._compute_task_wrench(
-                        x_cmd=x_cmd,
-                        pose_F=pose_F,
-                        v_F=v_F,
-                        measured_wrench_F=measured_wrench_F,
-                    )
+                    if self._use_force_mode:
+                        wrench_F = self._compute_task_wrench(
+                            x_cmd=x_cmd,
+                            pose_F=pose_F,
+                            v_F=v_F,
+                            measured_wrench_F=measured_wrench_F,
+                        )
                 elif active_space == ControlSpace.JOINT:
                     torque_cmd = self._compute_joint_torque(
                         q_cmd=q_cmd,
@@ -876,10 +925,13 @@ class RTDETaskFrameController(mp.Process):
                     )
                 sec_wins["wrench"].add(time.monotonic() - t0)
 
-                # ---------------- section: forcemode ----------------
+                # ---------------- section: actuator_send ----------------
                 t0 = time.monotonic()
                 if active_space == ControlSpace.TASK:
-                    self._send_task_wrench(rtde_c, wrench_F)
+                    if self._use_force_mode:
+                        self._send_task_wrench(rtde_c, wrench_F)
+                    else:
+                        self._send_task_pose(rtde_c, x_cmd)
                 elif active_space == ControlSpace.JOINT:
                     self._send_joint_torque(rtde_c, torque_cmd)
                 sec_wins["forcemode"].add(time.monotonic() - t0)
@@ -951,8 +1003,18 @@ class RTDETaskFrameController(mp.Process):
         finally:
             # cleanup: exit force‐mode, disconnect RTDE
             try:
-                if self.force_on:
+                if self._use_force_mode and self.force_on:
                     rtde_c.forceModeStop()
+            except Exception:
+                pass
+            try:
+                if not self._use_force_mode and hasattr(rtde_c, "servoStop"):
+                    rtde_c.servoStop()
+            except Exception:
+                pass
+            try:
+                if not self._use_force_mode and hasattr(rtde_c, "stopL"):
+                    rtde_c.stopL()
             except Exception:
                 pass
             try:

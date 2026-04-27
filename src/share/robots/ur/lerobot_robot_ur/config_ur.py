@@ -50,6 +50,10 @@ class URConfig(RobotConfig):
     shm_manager: Optional[SharedMemoryManager] = None
     ft_filter_cutoff_hz: Optional[float] = None  # Hz, EMA low-pass cutoff for f/t sensor
     force_mode_gain_scaling: float = 1.0
+    use_force_mode: bool = True  # Set False to use direct pose servoing instead of UR force mode.
+    simple_pose_servo_time: float = 0.002  # [s] servoL control duration per command.
+    simple_pose_lookahead_time: float = 0.2  # [s] range [0.03, 0.2], larger is smoother/slower.
+    simple_pose_gain: float = 100.0  # range [100, 2000], lower is gentler/slower.
     kp: list[float] = field(default_factory=lambda: [2500.0, 2500.0, 2500.0, 150.0, 150.0, 150.0])
     kd: list[float] = field(default_factory=lambda: [80.0, 80.0, 80.0, 8.0, 8.0, 8.0])
 
@@ -74,6 +78,12 @@ class URConfig(RobotConfig):
     debug_axis: int = 0
 
     def __post_init__(self):
+        if not (0.03 <= float(self.simple_pose_lookahead_time) <= 0.2):
+            raise ValueError("URConfig.simple_pose_lookahead_time must be in [0.03, 0.2].")
+        if not (100.0 <= float(self.simple_pose_gain) <= 2000.0):
+            raise ValueError("URConfig.simple_pose_gain must be in [100, 2000].")
+        if float(self.simple_pose_servo_time) <= 0.0:
+            raise ValueError("URConfig.simple_pose_servo_time must be > 0.")
         if len(self.kp) != 6:
             raise ValueError("URConfig.kp must be a length-6 list.")
         if len(self.kd) != 6:

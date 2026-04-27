@@ -1,6 +1,9 @@
 """Real UR5e demo that runs the FoundationPose pick MP-Net config."""
-
 from __future__ import annotations
+import logging
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s | %(levelname).1s | %(filename)s | %(message)s", force=True)
+logger = logging.getLogger(__name__)
+
 
 import time
 
@@ -12,9 +15,13 @@ from experiments.envs.foundationpose.ur5e_foundationpose_pick import UR5eFoundat
 from share.envs.manipulation_primitive_net.env_manipulation_primitive_net import ManipulationPrimitiveNet
 
 
+
+
 net_cfg = UR5eFoundationPosePickEnvConfig(
     robot_ip="172.22.22.2",
     fps=10,
+    grasp_pose_in_object_frame=[0.0023578723543550457, -0.01943284777001114, 0.022932484501906825, 2.9463068137125115, 0.2345169808077976, -0.2461135711969693]
+    # grasp_pose_in_object_frame=[0.0006627150304884862, -0.022690368567459582, 0.004825400147733541, -2.991602260590245, 0.2509943093002778, -0.07809589865543809]
 )
 
 
@@ -23,7 +30,7 @@ def run_demo() -> None:
     net = ManipulationPrimitiveNet(net_cfg)
     transition = net.reset()
 
-    print(f"start -> {net.active_primitive}")
+    logger.info(f"start -> {net.active_primitive}")
 
     try:
         for _step in range(100_000):
@@ -32,7 +39,7 @@ def run_demo() -> None:
             transition = net.step(action)
 
             info = transition[TransitionKey.INFO]
-            print(
+            logger.info(
                 f"[{net.active_primitive}] "
                 f"primitive_step={info.get('primitive_step', 0):04d} "
                 f"reason={info.get('transition_reason')} "
@@ -40,7 +47,6 @@ def run_demo() -> None:
             )
 
             if transition[TransitionKey.DONE] or transition[TransitionKey.TRUNCATED]:
-                print("episode finished -> reset")
                 transition = net.reset()
 
             dt = time.perf_counter() - loop_t0
