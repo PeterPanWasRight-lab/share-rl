@@ -67,10 +67,10 @@ teleop_primitive = ManipulationPrimitiveConfig(
             add_ee_pos_to_observation=False,
             add_joint_position_to_observation=False,
         ),
-        gripper=GripperConfig(enable=False),
+        gripper=GripperConfig(enable=False, static_pos=0.0),
         events=EventConfig(
             foot_switch_mapping={
-                (TeleopEvents.SUCCESS,): {"device": 20, "toggle": False},
+                (TeleopEvents.SUCCESS,): {"device": 4, "toggle": False},
             },
         ),
     ),
@@ -80,8 +80,8 @@ teleop_primitive = ManipulationPrimitiveConfig(
 
 net_cfg = ManipulationPrimitiveNetConfig(
     fps=30,
-    start_primitive="home",
-    reset_primitive="home",
+    start_primitive="teleop",
+    reset_primitive="teleop",
     primitives={
         "home": home_cfg,
         "target": target_cfg,
@@ -104,7 +104,7 @@ net_cfg = ManipulationPrimitiveNetConfig(
 )
 
 
-def run_demo(max_steps: int = 2_000) -> None:
+def run_demo(max_steps: int = 20_000) -> None:
     """Run until the robot reaches START_POSE + [0, 0, 0.10, 0, 0, 0]."""
     net = ManipulationPrimitiveNet(net_cfg)
     transition = net.reset()

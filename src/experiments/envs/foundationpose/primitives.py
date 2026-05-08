@@ -100,6 +100,8 @@ class FoundationPosePrimitive(ManipulationPrimitive):
             "mesh_path": self.object_spec.mesh_path,
             "prompt": self.object_spec.segmentation_prompt,
             "confidence_threshold": self.object_spec.confidence_threshold,
+            # "prompt": "black electrical box in the center", # TODO: REMOVE
+            # "confidence_threshold": 0.1, # TODO: REMOVE
         }
         self.debug_output_dir = Path("tmp")
         self.pose_key = pose_key
@@ -190,6 +192,47 @@ class RuntimeFrameTargetPrimitiveConfig(ManipulationPrimitiveConfig):
                 "Run the pose-estimation primitive before entering this primitive."
             )
 
+        origin_by_robot = self._origin_by_robot(runtime_origin)
+        for name, frame in self.task_frame.items():
+            frame.origin = [float(value) for value in origin_by_robot[name]]
+
+        super().on_entry(env, entry_context)
+
+    def _origin_by_robot(self, runtime_origin) -> dict[str, list[float]]:
+        if isinstance(runtime_origin, dict):
+            if set(self.task_frame).issubset(runtime_origin):
+                return {
+                    name: [float(value) for value in runtime_origin[name]]
+                    for name in self.task_frame
+                }
+            if {"x", "y", "z", "rx", "ry", "rz"}.issubset(runtime_origin):
+                pose = [float(runtime_origin[axis]) for axis in ("x", "y", "z", "rx", "ry", "rz")]
+                return {name: list(pose) for name in self.task_frame}
+
+        if isinstance(runtime_origin, (list, tuple, np.ndarray)) and len(runtime_origin) == 6:
+            pose = [float(value) for value in runtime_origin]
+            return {name: list(pose) for name in self.task_frame}
+
+        raise ValueError(
+            f"Runtime frame origin '{self.frame_origin_runtime_key}' must be a 6D pose or per-robot pose dict, "
+            f"got {type(runtime_origin).__name__}."
+        )
+
+@ManipulationPrimitiveConfig.register_subclass("relruntime_frame_target")
+@dataclass
+class RelativeRuntimeFrameTargetPrimitiveConfig(ManipulationPrimitiveConfig):
+    """Primitive that resolves its task-frame origin from a saved runtime pose."""
+
+    frame_origin_runtime_key: str = "object_pose"
+
+    def on_entry(self, env: ManipulationPrimitive, entry_context) -> None:
+        runtime_origin = env.get_runtime_value(self.frame_origin_runtime_key).copy()
+        if runtime_origin is None:
+            raise RuntimeError(
+                f"Missing runtime frame origin '{self.frame_origin_runtime_key}'. "
+                "Run the pose-estimation primitive before entering this primitive."
+            )
+        runtime_origin[2] += 0.02
         origin_by_robot = self._origin_by_robot(runtime_origin)
         for name, frame in self.task_frame.items():
             frame.origin = [float(value) for value in origin_by_robot[name]]

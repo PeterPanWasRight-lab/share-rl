@@ -9,7 +9,8 @@ from lerobot.envs import EnvConfig
 from lerobot.robots import Robot
 from lerobot.teleoperators import Teleoperator
 
-from experiments.envs.foundationpose.primitives import FoundationPosePrimitive, RuntimeFrameTargetPrimitiveConfig
+from experiments.envs.foundationpose.primitives import FoundationPosePrimitive, RuntimeFrameTargetPrimitiveConfig, \
+    RelativeRuntimeFrameTargetPrimitiveConfig
 from share.cameras.configuration_realsense_depth import RealSenseDepthCameraConfig
 from share.envs.manipulation_primitive.config_manipulation_primitive import (
     GripperConfig,
@@ -75,13 +76,12 @@ class FoundationPosePrimitiveConfig(ManipulationPrimitiveConfig):
         return env, env_processor, action_processor
 
 
-def get_target_prim_cfg(processor: ManipulationPrimitiveProcessorConfig) -> ManipulationPrimitiveConfig:
+def get_target_prim_cfg(target: list[float], processor: ManipulationPrimitiveProcessorConfig) -> ManipulationPrimitiveConfig:
     return ManipulationPrimitiveConfig(
         notes="Move to a known safe start pose.",
         processor=processor,
         task_frame=TaskFrame(
-            target=[-0.23552485078806693, -0.27116002789910776, 0.37228272132740536, 1.9188068639552711, 0.0017689096521515957, -1.6494817075949697],
-            #target=[-0.29878662794237504, -0.24038619921648444, 0.47113762731620834, 2.088740637708761, -0.049881005988045235, -1.1461642042972513],
+            target=target,
             policy_mode=[None] * 6,
             control_mode=[ControlMode.POS] * 6,
         ),
@@ -103,6 +103,20 @@ def get_object_relative_grasp_prim_cfg(
         frame_origin_runtime_key="object_pose",
     )
 
+def get_object_relative_grasp_prim_cfg_10_cm_up(
+    grasp_pose: list[float],
+    processor: ManipulationPrimitiveProcessorConfig,
+) -> RelativeRuntimeFrameTargetPrimitiveConfig:
+    return RelativeRuntimeFrameTargetPrimitiveConfig(
+        notes="Move to the fixed grasp pose expressed in the estimated object frame.",
+        processor=processor,
+        task_frame=TaskFrame(
+            target=list(grasp_pose),
+            policy_mode=[None] * 6,
+            control_mode=[ControlMode.POS] * 6,
+        ),
+        frame_origin_runtime_key="object_pose",
+    )
 
 
 @EnvConfig.register_subclass("ur5e_foundationpose_pick")
@@ -117,13 +131,17 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
     reset_primitive: str = "move_to_scan_pose"
     camera_serial_number: str = "352122271533"
 
-    scan_pose: list[float] = field(default_factory=lambda: [-0.429, 0.126, 0.261, 3.112, 0.068, -2.14])
-    stretch_pose: list[float] = field(default_factory=lambda: [-0.3879, -0.2751, 0.2326, 1.5888, -0.0644, -1.662])
+    scan_pose: list[float] = field(default_factory=lambda: [-0.17156228687476865, -0.2535763671826385, 0.1845222693563364, 2.593396419946534, -0.02643405134839627, -1.324594623492149])
+    stretch_pose: list[float] = field(default_factory=lambda: [-0.3879, -0.2751, 0.2226, 1.5888, -0.0644, -1.662])
     target_tolerance: list[float] = field(default_factory=lambda: [0.01, 0.01, 0.01, 0.10, 0.10, 0.10])
+
+    path_pose : list[float] = field(default_factory=lambda:[-0.2901358445965176, -0.23288848515893296, 0.3625410451634672, 2.449444249306145, -0.09502183864460467, -1.4990255343351544])
+
     grasp_pose_in_object_frame: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    grasp_pose_in_object_frame_2: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     closed_gripper_position: float = 1.0
     open_gripper_position: float = 0.0
-    gripper_hold_steps: int = 15
+    gripper_hold_steps: int = 35
     mock_initial_pose: list[float] = field(default_factory=lambda: [0.45, -0.20, 0.35, 3.14, 0.0, 0.0])
 
     def make(self):
@@ -151,16 +169,35 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
         }
 
         self.primitives = {
-            "move_to_scan_pose": get_target_prim_cfg(move_processor),
+            "move_to_scan_pose": get_target_prim_cfg(self.scan_pose, move_processor),
             "estimate_object_pose": FoundationPosePrimitiveConfig(
                 # processor=move_processor,
                 notes="Move the UR5e to the predefined scan pose before running FoundationPose.",
                 task_description="estimate object pose",
-                grasp_obj="/home/jzilke/ws/share-rl-pe/hoermann_objects/power_connector/object_spec.json"
+                grasp_obj="/home/jzilke/ws/share-rl-pe/hoermann_objects/black_obj/object_spec.json"
             ),
+            "move_to_pregrasp_pose": get_object_relative_grasp_prim_cfg_10_cm_up(self.grasp_pose_in_object_frame, move_processor),
             "move_to_grasp_pose": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame, move_processor),
-            "close_gripper": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame, close_gripper_processor),
-            "open_gripper": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame, open_gripper_processor),
+            "move_to_postgrasp_pose": get_object_relative_grasp_prim_cfg_10_cm_up(self.grasp_pose_in_object_frame, close_gripper_processor),
+            "close_gripper": get_object_relative_grasp_prim_cfg_10_cm_up(self.grasp_pose_in_object_frame, close_gripper_processor),
+
+            # "open_gripper": get_object_relative_grasp_prim_cfg_10_cm_up(self.grasp_pose_in_object_frame, open_gripper_processor),
+
+            # "move_to_path": get_target_prim_cfg(self.path_pose, move_processor),
+
+            "move_to_scan_pose_2": get_target_prim_cfg(self.scan_pose, move_processor),
+            "estimate_object_pose_2": FoundationPosePrimitiveConfig(
+                # processor=move_processor,
+                notes="Move the UR5e to the predefined scan pose before running FoundationPose.",
+                task_description="estimate object pose",
+                grasp_obj="/home/jzilke/ws/share-rl-pe/hoermann_objects/black_obj/object_spec.json"
+            ),
+            "move_to_grasp_pose_2": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame_2, move_processor),
+            "close_gripper_2": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame_2,
+                                                                close_gripper_processor),
+            "open_gripper_2": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame_2, open_gripper_processor),
+
+
         }
         self.transitions = [
             OnTargetPoseReached(
@@ -170,21 +207,67 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
             ),
             Always(
                 source="estimate_object_pose",
-                target="move_to_grasp_pose",
+                target="move_to_pregrasp_pose",
                 # tolerance=list(self.target_tolerance)
+            ),
+            OnTargetPoseReached(
+                source="move_to_pregrasp_pose",
+                target="move_to_grasp_pose",
+                tolerance=list(self.target_tolerance),
             ),
             OnTargetPoseReached(
                 source="move_to_grasp_pose",
                 target="close_gripper",
                 tolerance=list(self.target_tolerance),
             ),
+
             OnTimeLimit(
                 source="close_gripper",
-                target="open_gripper",
+                target="move_to_postgrasp_pose",
                 max_steps=int(self.gripper_hold_steps),
             ),
+
+            OnTargetPoseReached(
+                source="move_to_postgrasp_pose",
+                target="move_to_scan_pose",
+                tolerance=list(self.target_tolerance),
+            ),
+
+            # OnTimeLimit(
+            #     source="open_gripper",
+            #     target="move_to_scan_pose",
+            #     max_steps=int(self.gripper_hold_steps),
+            # ),
+
+
+            OnTargetPoseReached(
+                source="move_to_scan_pose_2",
+                target="estimate_object_pose_2",
+                tolerance=list(self.target_tolerance),
+            ),
+            Always(
+                source="estimate_object_pose_2",
+                target="move_to_grasp_pose_2",
+                # tolerance=list(self.target_tolerance)
+            ),
+
+            # OnTargetPoseReached(
+            #     source="move_to_path",
+            #     target="move_to_grasp_pose_2",
+            #     tolerance=list(self.target_tolerance),
+            # ),
+            OnTargetPoseReached(
+                source="move_to_grasp_pose_2",
+                target="close_gripper_2",
+                tolerance=list(self.target_tolerance),
+            ),
             OnTimeLimit(
-                source="open_gripper",
+                source="close_gripper_2",
+                target="open_gripper_2",
+                max_steps=int(self.gripper_hold_steps)*3,
+            ),
+            OnTimeLimit(
+                source="open_gripper_2",
                 target="move_to_scan_pose",
                 max_steps=int(self.gripper_hold_steps),
             ),
