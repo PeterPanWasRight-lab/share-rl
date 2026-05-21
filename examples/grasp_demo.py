@@ -11,7 +11,7 @@ import torch
 from lerobot.processor import TransitionKey
 from lerobot.utils.robot_utils import precise_sleep
 
-from experiments.envs.foundationpose.ur5e_foundationpose_pick import UR5eFoundationPosePickEnvConfig
+from experiments.envs.foundationpose.ur5e_foundationpose_pick_black_object import UR5eFoundationPosePickEnvConfig
 from share.envs.manipulation_primitive_net.env_manipulation_primitive_net import ManipulationPrimitiveNet
 
 

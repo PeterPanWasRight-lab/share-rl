@@ -148,9 +148,9 @@ class OnTargetPoseReached(Transition):
         for robot_name in robot_names:
             current_pose = get_robot_pose_from_observation(obs, robot_name)
             # print("obs", obs)
-            # print("current_pose", current_pose)
+            print("current_pose", current_pose)
             target_pose = [float(v) for v in targets[robot_name]]
-            # print("target_pose", target_pose)
+            print("target_pose", target_pose)
             axes = self._resolved_axes(info=info, robot_name=robot_name)
             tolerances = self._resolved_tolerances()
             for axis in axes:

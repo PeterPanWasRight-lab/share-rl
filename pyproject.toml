@@ -60,6 +60,10 @@ aloha = [
     "lerobot_robot_viperx @ file:src/share/robots/viperx",
     "lerobot_teleoperator_widowx @ file:src/share/teleoperators/widowx",
 ]
+
+pose-estimation = [
+    "pose-estimation @ git+ssh://git@github.com/ubi-coro/pose-estimation.git",
+]
 test = [
     "pytest>=8.1.0,<9.0.0",
     "pytest-timeout>=2.4.0,<3.0.0",
@@ -70,6 +74,7 @@ all = [
     "share-rl[spacemouse]",
     "share-rl[aloha]",
     "share-rl[test]",
+    "share-rl[pose-estimation]"
 ]
 
 [project.scripts]

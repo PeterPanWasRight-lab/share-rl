@@ -1,7 +1,10 @@
 """Real UR5e demo that runs the FoundationPose pick MP-Net config."""
 from __future__ import annotations
 import logging
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s | %(levelname).1s | %(filename)s | %(message)s", force=True)
+
+from experiments.envs.foundationpose.ur5e_manual_grasp_pose import UR5eGraspPoseEnvConfig
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname).1s | %(filename)s | %(message)s", force=True)
 logger = logging.getLogger(__name__)
 
 
@@ -11,19 +14,14 @@ import torch
 from lerobot.processor import TransitionKey
 from lerobot.utils.robot_utils import precise_sleep
 
-from experiments.envs.foundationpose.ur5e_foundationpose_pick import UR5eFoundationPosePickEnvConfig
 from share.envs.manipulation_primitive_net.env_manipulation_primitive_net import ManipulationPrimitiveNet
 
 
 
 
-net_cfg = UR5eFoundationPosePickEnvConfig(
+net_cfg = UR5eGraspPoseEnvConfig(
     robot_ip="172.22.22.2",
     fps=10,
-    grasp_pose_in_object_frame=[-0.0006185932290296847, -0.013591416782303412, 0.014247566373655568, 3.0867991389371747, 0.1394935028931703, -0.16085469330378888],
-    # grasp_pose_in_object_frame=[0.0023578723543550457, -0.01943284777001114, 0.022932484501906825, 2.9463068137125115, 0.2345169808077976, -0.2461135711969693],
-    # [-0.0018128696024512607, -0.025629282618058406, 0.019719200104651516, -3.039952134094152, 0.29274915816824665, -0.21380204602051478]
-    grasp_pose_in_object_frame_2=[-0.002281088291130301, -0.019856027995622416, 0.007388270416086196, -2.275752757008356, 0.11093880311483462, -0.1292008172624428],
 )
 
 

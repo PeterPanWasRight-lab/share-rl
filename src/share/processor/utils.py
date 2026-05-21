@@ -56,7 +56,8 @@ def policy_action_keys_for_robot(frame: "TaskFrame", gripper_enable: bool) -> li
 class FootSwitchHandler:
     def __init__(self, device_path="/dev/input/event0", event_names: tuple[str] = (TeleopEvents.SUCCESS, ), toggle: bool = False):
         self.device = evdev.InputDevice(device_path)
-        self.device.grab()
+        print("init FootSwitchHandler")
+        # self.device.grab()
         self.events = {name: False for name in event_names}
         self.toggle = toggle
         self.event_names = event_names

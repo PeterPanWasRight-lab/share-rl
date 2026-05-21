@@ -4,20 +4,24 @@ from dataclasses import dataclass
 from PIL import Image
 
 import numpy as np
+from lerobot.teleoperators import Teleoperator
 from scipy.spatial.transform import Rotation as SciRotation
 from lerobot.cameras import Camera
 from lerobot.robots import Robot
 from lerobot.utils.rotation import Rotation
 
 from share.cameras import RealSenseDepthCamera
-from share.envs.manipulation_primitive.config_manipulation_primitive import ManipulationPrimitiveConfig
+from share.envs.manipulation_primitive.config_manipulation_primitive import (
+    ManipulationPrimitiveConfig,
+    PrimitiveEntryContext,
+)
 from share.envs.manipulation_primitive.env_manipulation_primitive import ManipulationPrimitive
 from share.envs.manipulation_primitive.task_frame import TaskFrame
 import logging
 
-from share.pose_estimation.grasp_obj_spec import GraspObjectSpec
-from share.pose_estimation.pose_estimator import PoseEstimator
+from pose_estimation import GraspObjectSpec, PoseEstimator
 from share.utils.constants import DEFAULT_ROBOT_NAME
+from share.utils.transformation_utils import get_robot_pose_from_observation
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +77,22 @@ def transform_to_pose_xyzrpy(transform: np.ndarray) -> list[float]:
         float(translation[2]),
         *[float(value) for value in rotation.as_euler("xyz", degrees=False).tolist()],
     ]
+
+
+def pose_xyzrpy_to_transform(pose: list[float] | np.ndarray) -> np.ndarray:
+    pose = np.asarray(pose, dtype=np.float64).reshape(6)
+    transform = np.eye(4, dtype=np.float64)
+    transform[:3, :3] = SciRotation.from_euler("xyz", pose[3:], degrees=False).as_matrix()
+    transform[:3, 3] = pose[:3]
+    return transform
+
+
+def tcp_pose_rotvec_to_transform(pose: list[float] | np.ndarray) -> np.ndarray:
+    pose = np.asarray(pose, dtype=np.float64).reshape(6)
+    transform = np.eye(4, dtype=np.float64)
+    transform[:3, :3] = SciRotation.from_rotvec(pose[3:]).as_matrix()
+    transform[:3, 3] = pose[:3]
+    return transform
 
 
 class FoundationPosePrimitive(ManipulationPrimitive):
@@ -145,20 +165,22 @@ class FoundationPosePrimitive(ManipulationPrimitive):
             tcp_world[:3, 3] = np.asarray(tcp_pose[:3], dtype=np.float64)
             camera_world = tcp_world @ self.camera_to_gripper_transform
 
-            logger.debug("object pose in world frame:\n%s", pose_base)
-            logger.debug("object pose in tcp frame:\n%s", pose_tcp)
-            logger.debug("object pose in camera frame:\n%s", pose)
-            logger.debug("tcp pose in world frame:\n%s", tcp_world)
-            logger.debug("camera pose in world frame:\n%s", camera_world)
+            logger.info("object pose in world frame:\n%s", pose_base)
+            logger.info("object pose in tcp frame:\n%s", pose_tcp)
+            logger.info("object pose in camera frame:\n%s", pose)
+            logger.info("tcp pose in world frame:\n%s", tcp_world)
+            logger.info("camera pose in world frame:\n%s", camera_world)
 
             camera_distance_m = float(np.linalg.norm(np.asarray(pose, dtype=np.float64)[:3, 3]))
             tcp_distance_m = float(np.linalg.norm(pose_tcp[:3, 3]))
             base_distance_m = float(np.linalg.norm(pose_base[:3, 3]))
-            logger.debug(f"object translation distance in camera frame [m]: {camera_distance_m:.4f}")
-            logger.debug(f"object translation distance in tcp frame [m]: {tcp_distance_m:.4f}")
-            logger.debug(f"object translation distance in base frame [m]: {base_distance_m:.4f}")
+            logger.info(f"object translation distance in camera frame [m]: {camera_distance_m:.4f}")
+            logger.info(f"object translation distance in tcp frame [m]: {tcp_distance_m:.4f}")
+            logger.info(f"object translation distance in base frame [m]: {base_distance_m:.4f}")
 
-            logger.debug(f"OBJECT POSE IN TCP FRAME: {transform_to_pose_xyzrpy(pose_tcp)}")
+            gripper_pose_object = np.linalg.inv(pose_base) @ tcp_world
+            logger.info(f"OBJECT POSE IN TCP FRAME: {transform_to_pose_xyzrpy(pose_tcp)}")
+            logger.info(f"GRIPPER POSE IN OBJECT FRAME: {transform_to_pose_xyzrpy(gripper_pose_object)}")
 
         self.set_runtime_value(self.pose_key, object_pose_world)
         self._pose_estimator_initialized = False
@@ -175,6 +197,101 @@ class FoundationPosePrimitive(ManipulationPrimitive):
             Image.fromarray(estimation.get('mask')).save(self.debug_output_dir / "mask.png")
 
         return estimation
+
+@ManipulationPrimitiveConfig.register_subclass("foundation_pose")
+@dataclass
+class FoundationPosePrimitiveConfig(ManipulationPrimitiveConfig):
+    grasp_obj: GraspObjectSpec|str|None = None
+    def validate(self, robot_dict, teleop_dict):
+        super().validate(robot_dict, teleop_dict)
+
+    def make(
+            self,
+            robot_dict: dict[str, Robot],
+            teleop_dict: dict[str, Teleoperator],
+            cameras: dict[str, Camera],
+            device: str = "cpu"
+    ):
+        self.validate(robot_dict, teleop_dict)
+        self.infer_features(robot_dict, cameras)  # todo: fix initial_features
+
+        display_cameras = self.processor.image_preprocessing is not None and self.processor.image_preprocessing.display_cameras
+        env = FoundationPosePrimitive(task_frame=self.task_frame,
+                                      robot_dict=robot_dict,
+                                      cameras=cameras,
+                                      display_cameras=display_cameras,
+                                      grasp_object=self.grasp_obj,
+                                      pose_key="object_pose")
+
+        env_processor = self.make_env_processor(device)
+        action_processor = self.make_action_processor(robot_dict, teleop_dict, device)
+        return env, env_processor, action_processor
+
+@ManipulationPrimitiveConfig.register_subclass("cached_object_pose_in_tcp_frame")
+@dataclass
+class CachedObjectPoseInTcpFramePrimitiveConfig(ManipulationPrimitiveConfig):
+    """Compute current TCP-frame object pose from a saved world-frame estimate."""
+
+    object_pose_runtime_key: str = "object_pose"
+    output_runtime_key: str = "object_pose_in_tcp_frame"
+    gripper_pose_output_runtime_key: str = "gripper_pose_in_object_frame"
+    robot_name: str = DEFAULT_ROBOT_NAME
+
+    def on_entry(self, env: ManipulationPrimitive, entry_context: PrimitiveEntryContext | None) -> None:
+        super().on_entry(env, entry_context)
+
+        object_pose_world = env.get_runtime_value(self.object_pose_runtime_key)
+        if object_pose_world is None:
+            raise RuntimeError(
+                f"Missing runtime object pose '{self.object_pose_runtime_key}'. "
+                "Run the FoundationPose primitive before entering this primitive."
+            )
+
+        current_tcp_pose_world = self._current_tcp_pose_world(env, entry_context)
+        object_pose = self._pose_for_robot(object_pose_world)
+        world_to_tcp = np.linalg.inv(pose_xyzrpy_to_transform(current_tcp_pose_world))
+        world_to_object = pose_xyzrpy_to_transform(object_pose)
+        world_to_gripper = pose_xyzrpy_to_transform(current_tcp_pose_world)
+        tcp_to_object = world_to_tcp @ world_to_object
+        object_to_gripper = np.linalg.inv(world_to_object) @ world_to_gripper
+        object_pose_tcp = transform_to_pose_xyzrpy(tcp_to_object)
+        gripper_pose_object = transform_to_pose_xyzrpy(object_to_gripper)
+
+        env.set_runtime_value(self.output_runtime_key, object_pose_tcp)
+        env.set_runtime_value(self.gripper_pose_output_runtime_key, gripper_pose_object)
+        env._primitive_complete = True
+        logger.info("OBJECT POSE IN TCP FRAME: %s", object_pose_tcp)
+        logger.info("GRIPPER POSE IN OBJECT FRAME: %s", gripper_pose_object)
+
+    def _current_tcp_pose_world(
+        self,
+        env: ManipulationPrimitive,
+        entry_context: PrimitiveEntryContext | None,
+    ) -> list[float]:
+        if entry_context is not None:
+            try:
+                return get_robot_pose_from_observation(entry_context.observation, self.robot_name)
+            except KeyError:
+                logger.debug("Entry observation has no TCP pose for '%s'; reading env observation.", self.robot_name)
+
+        obs = env._get_observation()
+        raw_tcp_pose = [obs[f"{self.robot_name}.{key}"] for key in EE_POSE_KEYS]
+        return transform_to_pose_xyzrpy(tcp_pose_rotvec_to_transform(raw_tcp_pose))
+
+    def _pose_for_robot(self, runtime_pose) -> list[float]:
+        if isinstance(runtime_pose, dict):
+            if self.robot_name in runtime_pose:
+                return [float(value) for value in runtime_pose[self.robot_name]]
+            if {"x", "y", "z", "rx", "ry", "rz"}.issubset(runtime_pose):
+                return [float(runtime_pose[axis]) for axis in ("x", "y", "z", "rx", "ry", "rz")]
+
+        if isinstance(runtime_pose, (list, tuple, np.ndarray)) and len(runtime_pose) == 6:
+            return [float(value) for value in runtime_pose]
+
+        raise ValueError(
+            f"Runtime object pose '{self.object_pose_runtime_key}' must be a 6D pose or per-robot pose dict, "
+            f"got {type(runtime_pose).__name__}."
+        )
 
 
 @ManipulationPrimitiveConfig.register_subclass("runtime_frame_target")

@@ -54,6 +54,7 @@ class TaskFrameCommand(TaskFrame):
         "compliance_adaptive_limit_enable",
         "compliance_desired_wrench",
         "compliance_adaptive_limit_min",
+        "use_force_mode"
     }
 
     @property
@@ -92,6 +93,7 @@ class TaskFrameCommand(TaskFrame):
             d["compliance_reference_limit_enable"] = np.asarray(raw_overrides.get("compliance_reference_limit_enable", [False] * 6)).astype(np.bool_)
             d["compliance_desired_wrench"] = np.asarray(raw_overrides.get("compliance_desired_wrench", [5.0, 5.0, 5.0, 0.5, 0.5, 0.5])).astype(np.float64)
             d["compliance_adaptive_limit_min"] = np.asarray(raw_overrides.get("compliance_adaptive_limit_min", [0.1] * 6)).astype(np.float64)
+            d["use_force_mode"] = raw_overrides.get("use_force_mode", False)
         except Exception as e:
             raise ValueError(f"TaskFrameCommand seems to be missing fields: {e}")
         return d
@@ -225,6 +227,7 @@ class RTDETaskFrameController(mp.Process):
                 "compliance_reference_limit_enable": np.array(self.config.compliance_reference_limit_enable, dtype=bool),
                 "compliance_desired_wrench": np.array(self.config.compliance_desired_wrench, dtype=np.float64),
                 "compliance_adaptive_limit_min": np.array(self.config.compliance_adaptive_limit_min, dtype=np.float64),
+                "use_force_mode": bool(self.config.use_force_mode),
             },
         )
         self.origin = self._last_cmd.origin
@@ -235,8 +238,7 @@ class RTDETaskFrameController(mp.Process):
         self.min_pose = self._last_cmd.min_pose
         self._resolve_compliance_settings(**self._last_cmd.controller_overrides)
         self._active_space: ControlSpace | None = None
-        self._use_force_mode = bool(getattr(self.config, "use_force_mode", True))
-
+        self._use_force_mode = bool(self._last_cmd.controller_overrides.get("use_force_mode"))
     # =========== launch & shutdown =============
     def connect(self):
         """Spawn the control process and block until the first iteration completes."""
@@ -517,6 +519,7 @@ class RTDETaskFrameController(mp.Process):
             self.max_pose = single["max_pose"].copy()
             self.min_pose = single["min_pose"].copy()
             self._resolve_compliance_settings(**single)
+            self._use_force_mode = bool(single["use_force_mode"])
 
             pose_F = self.read_current_state(rtde_r)["ActualTCPPose"]
             q_now = np.array(rtde_r.getActualQ(), dtype=np.float64)
@@ -797,6 +800,7 @@ class RTDETaskFrameController(mp.Process):
                 sec_wins["queue_get"].add(time.monotonic() - t0)
 
                 t0 = time.monotonic()
+                # print(f"msgs: {msgs}")
                 keep_running, active_space, x_cmd, q_cmd = self._apply_pending_commands(
                     msgs=msgs,
                     n_cmd=n_cmd,
@@ -931,6 +935,7 @@ class RTDETaskFrameController(mp.Process):
                     if self._use_force_mode:
                         self._send_task_wrench(rtde_c, wrench_F)
                     else:
+                        # self._send_task_pose(rtde_c, x_cmd, mode="servoL")
                         self._send_task_pose(rtde_c, x_cmd)
                 elif active_space == ControlSpace.JOINT:
                     self._send_joint_torque(rtde_c, torque_cmd)

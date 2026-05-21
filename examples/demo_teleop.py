@@ -99,7 +99,6 @@ net_cfg = ManipulationPrimitiveNetConfig(
         rt_core=3,
         use_gripper=True,
     ),
-    # This example does not use teleop input, but the current runtime expects a teleop config.
     teleop=SpaceMouseConfig(action_scale=[0.25, 0.25, 0.20, 0.50, 0.50, 0.50]),
 )
 
