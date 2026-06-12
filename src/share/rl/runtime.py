@@ -10,6 +10,7 @@ from typing import Any
 
 import torch
 
+import share.policies  # noqa: F401  # register share-local policy configs
 from lerobot.configs.default import DatasetConfig
 from lerobot.configs.types import FeatureType, NormalizationMode
 from lerobot.configs.train import TrainRLServerPipelineConfig

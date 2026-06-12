@@ -23,6 +23,7 @@ from multiprocessing.managers import SharedMemoryManager
 from typing import Any
 
 from lerobot.cameras import make_cameras_from_configs
+from lerobot.motors import MotorCalibration
 from lerobot.processor.hil_processor import GRIPPER_KEY
 from lerobot.robots import Robot
 from lerobot.utils.errors import DeviceNotConnectedError, DeviceAlreadyConnectedError
@@ -52,10 +53,8 @@ class UR(Robot):
     ]
 
     def __init__(self, config: URConfig):
-        # super().__init__(config)  # we avoid super's init because we dont have or want a calibration dir
+        super().__init__(config)
         self.config = config
-        self.robot_type = self.name
-        self.id = config.id
         self.task_frame = TaskFrameCommand(controller_overrides=self._default_controller_overrides())
 
         self.shm = SharedMemoryManager()
@@ -65,12 +64,17 @@ class UR(Robot):
         self.controller = RTDETaskFrameController(config)
 
         if self.config.use_gripper:
+            gripper_range = self._gripper_range_from_calibration()
+            min_position, max_position = gripper_range if gripper_range is not None else (None, None)
             self.gripper = RTDERobotiqController(
                 hostname=config.robot_ip,
                 shm_manager=self.shm,
                 frequency=config.gripper_frequency,
                 soft_real_time=config.gripper_soft_real_time,
                 rt_core=config.gripper_rt_core,
+                auto_calibrate=not self.is_calibrated,
+                min_position=min_position,
+                max_position=max_position,
                 verbose=config.verbose
             )
         else:
@@ -146,14 +150,17 @@ class UR(Robot):
             _is_connected &= self.gripper.is_ready
         return _is_connected
 
-    def connect(self):
+    def connect(self, calibrate: bool = True):
         if self.is_connected:
             raise DeviceAlreadyConnectedError(f"{self} already connected")
 
         self.controller.start()
         self.controller.zero_ft()
         if self.gripper is not None:
+            self.gripper.auto_calibrate = calibrate and not self.is_calibrated
             self.gripper.start()
+            if self.gripper.auto_calibrate:
+                self.calibrate()
 
         for name in self.cameras:
             self.cameras[name].connect()
@@ -163,16 +170,35 @@ class UR(Robot):
 
     @property
     def is_calibrated(self) -> bool:
-        """Whether the robot is currently calibrated or not. Should be always `True` if not applicable"""
-        return True
+        """Whether the Robotiq gripper range is stored, or no gripper is configured."""
+        if not self.config.use_gripper:
+            return True
+        return self._gripper_range_from_calibration() is not None
 
     def calibrate(self) -> None:
         """
-        Calibrate the robot if applicable. If not, this should be a no-op.
-
-        This method should collect any necessary data (e.g., motor offsets) and update the
-        :pyattr:`calibration` dictionary accordingly.
+        Persist the Robotiq open/closed encoder range after gripper auto-calibration.
         """
+        if self.gripper is None:
+            return None
+
+        state = self.gripper.get_state()
+        min_position = int(state["min_position"])
+        max_position = int(state["max_position"])
+        if min_position >= max_position:
+            raise RuntimeError(
+                f"Invalid Robotiq calibration range: min={min_position}, max={max_position}"
+            )
+
+        self.calibration["gripper"] = MotorCalibration(
+            id=0,
+            drive_mode=0,
+            homing_offset=0,
+            range_min=min_position,
+            range_max=max_position,
+        )
+        self._save_calibration()
+        logger.info(f"Calibration saved to {self.calibration_fpath}")
         return None
 
     def configure(self) -> None:
@@ -346,11 +372,19 @@ class UR(Robot):
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
         self.controller.stop()
+        if self.gripper is not None:
+            self.gripper.stop()
         for cam in self.cameras.values():
             cam.disconnect()
         self.shm.shutdown()
 
         logger.info(f"{self} disconnected.")
+
+    def _gripper_range_from_calibration(self) -> tuple[int, int] | None:
+        gripper_calibration = self.calibration.get("gripper")
+        if gripper_calibration is None:
+            return None
+        return int(gripper_calibration.range_min), int(gripper_calibration.range_max)
 
 
 URV2 = UR

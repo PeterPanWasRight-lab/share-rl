@@ -70,6 +70,18 @@ def _load_ur_module(controller_module):
     hil_processor_module = types.ModuleType("lerobot.processor.hil_processor")
     hil_processor_module.GRIPPER_KEY = "gripper"
 
+    motors_module = types.ModuleType("lerobot.motors")
+
+    class MotorCalibration:
+        def __init__(self, id, drive_mode, homing_offset, range_min, range_max):
+            self.id = id
+            self.drive_mode = drive_mode
+            self.homing_offset = homing_offset
+            self.range_min = range_min
+            self.range_max = range_max
+
+    motors_module.MotorCalibration = MotorCalibration
+
     robots_module = types.ModuleType("lerobot.robots")
     robots_module.Robot = object
 
@@ -96,6 +108,7 @@ def _load_ur_module(controller_module):
     ur_pkg.__path__ = []
 
     sys.modules.setdefault("lerobot.cameras", cameras_module)
+    sys.modules.setdefault("lerobot.motors", motors_module)
     sys.modules.setdefault("lerobot.processor.hil_processor", hil_processor_module)
     sys.modules.setdefault("lerobot.robots", robots_module)
     sys.modules.setdefault("lerobot.utils.errors", errors_module)
@@ -220,6 +233,36 @@ def test_controller_joint_impedance_uses_direct_torque_interface():
     rtde_c = DirectTorqueOnly()
     controller_module.RTDETaskFrameController._send_joint_torque(rtde_c, torque)
     assert rtde_c.calls == [(torque.tolist(), True)]
+
+
+def test_rotational_boundary_spring_can_exceed_soft_wrench_limit():
+    controller_module = _load_controller_module()
+    controller = object.__new__(controller_module.RTDETaskFrameController)
+    controller.kp = np.array([10.0] * 6)
+    controller.kd = np.array([0.0] * 6)
+    controller.min_pose = np.array([-np.inf, -np.inf, -np.inf, -0.3, -np.inf, -np.inf], dtype=np.float64)
+    controller.max_pose = np.array([np.inf, np.inf, np.inf, 0.3, np.inf, np.inf], dtype=np.float64)
+    controller.wrench_limits = np.array([1.0] * 6, dtype=np.float64)
+    controller.compliance_adaptive_limit_enable = np.array([False] * 6, dtype=bool)
+    controller.compliance_adaptive_limit_min = np.array([0.1] * 6, dtype=np.float64)
+    controller.compliance_adaptive_limit_theta = np.zeros(6, dtype=np.float64)
+    controller.rotation_interval_modes = np.array(
+        [int(controller_module.RotationIntervalMode.from_name("linear"))] * 6,
+        dtype=np.int8,
+    )
+
+    desired_wrench = np.zeros(6, dtype=np.float64)
+    pose = np.zeros(6, dtype=np.float64)
+    pose[3:6] = controller_module.R.from_euler("xyz", [0.8, 0.0, 0.0], degrees=False).as_rotvec()
+
+    controller.apply_wrench_bounds(
+        pose=pose,
+        desired_wrench=desired_wrench,
+        measured_wrench=np.zeros(6, dtype=np.float64),
+    )
+
+    assert desired_wrench[3] < -controller.wrench_limits[3]
+    np.testing.assert_allclose(desired_wrench[3], -5.0, atol=1e-6)
 
 
 def test_controller_reexpresses_virtual_target_when_task_frame_origin_changes():
@@ -478,3 +521,28 @@ def test_ur_wrapper_rejects_unknown_task_frame_controller_override():
                 controller_overrides={"mystery_limit": [1.0] * 6},
             )
         )
+
+
+def test_ur_wrapper_persists_robotiq_gripper_calibration_range():
+    controller_module = _load_controller_module()
+    ur_module = _load_ur_module(controller_module)
+    robot = object.__new__(ur_module.UR)
+    robot.config = types.SimpleNamespace(use_gripper=True)
+    robot.calibration = {}
+    robot.calibration_fpath = Path("calibration.json")
+    robot.gripper = types.SimpleNamespace(
+        get_state=lambda: {"min_position": 7.0, "max_position": 241.0}
+    )
+    saved = []
+    robot._save_calibration = lambda: saved.append(dict(robot.calibration))
+
+    assert robot.is_calibrated is False
+
+    robot.calibrate()
+
+    assert saved
+    assert robot.is_calibrated is True
+    assert robot._gripper_range_from_calibration() == (7, 241)
+    gripper_calibration = robot.calibration["gripper"]
+    assert gripper_calibration.range_min == 7
+    assert gripper_calibration.range_max == 241

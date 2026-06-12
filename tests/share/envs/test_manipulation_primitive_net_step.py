@@ -138,6 +138,7 @@ def _make_net(
     net._episode_step_count = 0
     net._primitive_step_count = 0
     net._needs_full_reset = False
+    net._step_info = {}
     return net
 
 

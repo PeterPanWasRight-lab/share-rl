@@ -10,7 +10,6 @@ from typing import Any
 import grpc
 import torch
 from lerobot.policies.sac.configuration_sac import SACConfig
-from lerobot.utils.device_utils import get_safe_torch_device
 from torch.multiprocessing import Event, Queue
 
 from lerobot.configs import parser
@@ -24,7 +23,6 @@ from lerobot.transport.utils import (
     send_bytes_in_chunks,
     transitions_to_bytes,
 )
-from lerobot.utils.control_utils import predict_action
 from lerobot.utils.random_utils import set_seed
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.transition import Transition, move_transition_to_device
@@ -42,6 +40,8 @@ from share.rl.runtime import (
     sanitize_local_grpc_proxy_env,
 )
 from share.teleoperators import TeleopEvents, has_event, is_intervention
+from share.utils.control_utils import predict_action
+from share.utils.device import get_safe_torch_device
 from share.utils.logging_utils import log_runtime_frequency
 
 
@@ -276,7 +276,7 @@ def act_with_policy(
                 action = predict_action(
                     observation=policy_obs,
                     policy=policy,
-                    device=get_safe_torch_device(policy.config.device),
+                    device=device,
                     preprocessor=preprocessors[active_primitive],
                     postprocessor=postprocessors[active_primitive],
                     use_amp=policy.config.use_amp,

@@ -1,79 +1,12 @@
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 
-import draccus
-
-from lerobot.configs.default import DatasetConfig
-from lerobot.configs.train import TrainPipelineConfig
+from share.configs.mpnet import DatasetRecordConfig, TrainRLServerPipelineConfig
+from share.configs.rl import MPNetTrainRLServerPipelineConfig
 from share.debug.mpnet_debug import MPNetDebugConfig
-from share.envs.manipulation_primitive_net.config_manipulation_primitive_net import ManipulationPrimitiveNetConfig
 
 
-
-
-@dataclass
-class DatasetRecordConfig(draccus.ChoiceRegistry, DatasetConfig):
-    # Number of seconds for a single episode or intervention
-    episode_time_s: int = 30
-    # Number of seconds for a teleoperated reset
-    reset_time_s: int | None = None
-    # Number of episodes to record.
-    num_episodes: int = 50
-    # A short but accurate description of the task performed during the recording (e.g. "Pick the Lego block and drop it in the box on the right.")
-    single_task: str | None = None
-    # Encode frames in the dataset into video
-    video: bool = True
-    # Upload dataset to Hugging Face hub.
-    push_to_hub: bool = False
-    # Upload on private repository on the Hugging Face hub.
-    private: bool = False
-    # Add tags to your dataset on the hub.
-    tags: list[str] | None = None
-    # Number of subprocesses handling the saving of frames as PNG. Set to 0 to use threads only;
-    # set to ≥1 to use subprocesses, each using threads to write images. The best number of processes
-    # and threads depends on your system. We recommend 4 threads per camera with 0 processes.
-    # If fps is unstable, adjust the thread count. If still unstable, try using 1 or more subprocesses.
-    num_image_writer_processes: int = 0
-    # Number of threads writing the frames as png images on disk, per camera.
-    # Too many threads might cause unstable teleoperation fps due to main thread being blocked.
-    # Not enough threads might cause low camera fps.
-    num_image_writer_threads_per_camera: int = 4
-    # Number of episodes to record before batch encoding videos
-    # Set to 1 for immediate encoding (default behavior), or higher for batched encoding
-    video_encoding_batch_size: int = 1
-    # Rename map for the observation to override the image and state keys
-    rename_map: dict[str, str] = field(default_factory=dict)
-    # Keep an in-memory replay buffer and only write to disk when checkpointing
-    in_memory: bool = True
-    # Whether to overwrite repo_id and interpret root as dir containing folders, only works for disk (no in-memory) buffers
-    load_dir: bool = False
-    # Video codec for encoding videos. Options: 'h264', 'hevc', 'libsvtav1'.
-    # Use 'h264' for faster encoding on systems where AV1 encoding is CPU-heavy.
-    vcodec: str = "libsvtav1"
-
-    def __post_init__(self):
-        if not self.in_memory:
-            self.load_dir = False
-
-    @property
-    def project_root(self) -> str:
-        project_root = None
-        if self.root is not None:
-            if self.load_dir:
-                project_root = str(Path(self.root).parent)
-            else:
-                project_root = str(Path(self.root).parent.parent)
-        return project_root
-
-    @property
-    def type(self) -> str:
-        return self.get_choice_name(self.__class__)
-
-
-@dataclass
-class RecordConfig:
-    env: ManipulationPrimitiveNetConfig
-    dataset: DatasetRecordConfig | None = None
+@dataclass(kw_only=True)
+class RecordConfig(MPNetTrainRLServerPipelineConfig):
     debug: MPNetDebugConfig | None = None
     # Whether record should load and run the configured policy.
     use_policy: bool = True
@@ -89,12 +22,3 @@ class RecordConfig:
     display_compressed_images: bool = False
     # Use vocal synthesis to read events.
     play_sounds: bool = True
-    # Resume recording on an existing dataset.
-    resume: bool = False
-
-
-@dataclass(kw_only=True)
-class TrainRLServerPipelineConfig(TrainPipelineConfig):
-    # NOTE: In RL, we don't need an offline dataset
-    # TODO: Make `TrainPipelineConfig.dataset` optional
-    dataset: DatasetRecordConfig  # type: ignore[assignment] # because the parent class has made it's type non-optional

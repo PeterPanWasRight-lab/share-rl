@@ -16,7 +16,6 @@ from lerobot.processor import (
     TransitionKey
 )
 from lerobot.utils.constants import ACTION, REWARD, DONE
-from lerobot.utils.control_utils import predict_action
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import (
     init_logging,
@@ -24,16 +23,12 @@ from lerobot.utils.utils import (
 )
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
-try:
-    from lerobot.utils.device_utils import get_safe_torch_device
-except ImportError:  # pragma: no cover - compatibility with older lerobot layouts
-    from lerobot.utils.utils import get_safe_torch_device
-
 from share.configs.record import RecordConfig
 from share.debug.mpnet_debug import MPNetDebugger
 from share.envs.manipulation_primitive_net.env_manipulation_primitive_net import ManipulationPrimitiveNet
 from share.teleoperators import TeleopEvents, has_event, is_intervention
-from share.utils.control_utils import make_policies_and_datasets
+from share.utils.control_utils import make_policies_and_datasets, predict_action
+from share.utils.device import get_safe_torch_device
 from share.utils.logging_utils import log_runtime_frequency
 from share.utils.video_utils import MultiVideoEncodingManager
 
@@ -110,7 +105,7 @@ def record_loop(
         if policy is not None and not force_intervention:
             # noinspection PyTypeChecker
             action = predict_action(
-                observation={key: obs[key] for key in policy.config.input_features},
+                observation=obs,
                 policy=policy,
                 device=get_safe_torch_device(policy.config.device),
                 preprocessor=preprocessors[mp_net.active_primitive],

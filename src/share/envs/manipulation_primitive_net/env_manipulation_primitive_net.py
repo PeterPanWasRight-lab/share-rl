@@ -182,8 +182,8 @@ class ManipulationPrimitiveNet(gym.Env):
 
         # 1) Process action
         info = dict(self._step_info)
-        #if primitive.policy is None and not getattr(self._envs[active], "uses_autonomous_step", False):
-        #    info[TeleopEvents.IS_INTERVENTION] = True
+        if primitive.policy is None and not getattr(self._envs[active], "uses_autonomous_step", False):
+            info[TeleopEvents.IS_INTERVENTION] = True
 
         action_transition = create_transition(action=action, info=info)
         processed_action_transition = self._action_processors[active](action_transition)

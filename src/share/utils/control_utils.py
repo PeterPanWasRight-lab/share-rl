@@ -1,13 +1,16 @@
 import logging
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
-from typing import Sequence, Tuple
+from typing import Any, Sequence, Tuple
 
+import torch
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.factory import make_policy, make_pre_post_processors
+from lerobot.processor import PolicyAction, PolicyProcessorPipeline
 from lerobot.processor.rename_processor import rename_stats
 
 from share.configs.record import RecordConfig
@@ -91,6 +94,42 @@ def make_policies_and_datasets(cfg: RecordConfig):
             postprocessors[name] = post
 
     return datasets, policies, preprocessors, postprocessors
+
+
+def predict_action(
+    *,
+    observation: dict[str, Any],
+    policy: PreTrainedPolicy,
+    device: torch.device,
+    preprocessor: PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
+    postprocessor: PolicyProcessorPipeline[PolicyAction, PolicyAction],
+    use_amp: bool,
+    task: str | None = None,
+    robot_type: str | None = None,
+) -> torch.Tensor:
+    """Run policy inference from Share's processed tensor observation contract."""
+
+    policy_observation = {}
+    for key in policy.config.input_features:
+        value = observation[key]
+        if not isinstance(value, torch.Tensor):
+            value = torch.as_tensor(value)
+        if value.ndim == len(policy.config.input_features[key].shape):
+            value = value.unsqueeze(0)
+        policy_observation[key] = value.to(device)
+
+    policy_observation["task"] = task if task else ""
+    policy_observation["robot_type"] = robot_type if robot_type else ""
+
+    with (
+        torch.inference_mode(),
+        torch.autocast(device_type=device.type) if device.type == "cuda" and use_amp else nullcontext(),
+    ):
+        policy_observation = preprocessor(policy_observation)
+        action = policy.select_action(policy_observation)
+        action = postprocessor(action)
+
+    return action
 
 
 def make_step_timing_hooks(

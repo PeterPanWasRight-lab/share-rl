@@ -1247,7 +1247,8 @@ class RTDETaskFrameController(mp.Process):
                     penetration = min_rpy[j] - rpy[j]
                     desired_wrench[i] += +self.kp[i] * penetration
 
-            desired_wrench[i] = np.clip(desired_wrench[i], -scaled_wrench_limits[i], scaled_wrench_limits[i])
+            # Contact limits cap the nominal command, but the boundary spring must
+            # be allowed to push harder inward after the robot has left its box.
 
     def clip_reference_errors(self, e: float, edot: float, i: int) -> tuple[float, float]:
         """

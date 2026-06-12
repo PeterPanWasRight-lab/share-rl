@@ -58,6 +58,9 @@ class RTDERobotiqController(mp.Process):
                  frequency: float = 20.0,
                  soft_real_time: bool = False,
                  rt_core: int = 4,
+                 auto_calibrate: bool = True,
+                 min_position: int | None = None,
+                 max_position: int | None = None,
                  verbose: bool = False):
         super().__init__(name='GripperProcess')
         # network settings
@@ -66,6 +69,9 @@ class RTDERobotiqController(mp.Process):
         self.frequency = frequency
         self.soft_real_time = soft_real_time
         self.rt_core = rt_core
+        self.auto_calibrate = auto_calibrate
+        self.min_position = min_position
+        self.max_position = max_position
         self.verbose = verbose
 
         # shared-memory setup
@@ -85,6 +91,8 @@ class RTDERobotiqController(mp.Process):
         # state ring-buffer example
         example_state = {
             'width': 0.0,
+            'min_position': float(self.min_position if self.min_position is not None else 0),
+            'max_position': float(self.max_position if self.max_position is not None else 255),
             'object_status': 0,
             'fault': 0,
             'timestamp': time.time()
@@ -193,6 +201,7 @@ class RTDERobotiqController(mp.Process):
         return self.gripper_out_rb.get_all()
 
     def run(self):
+        gr = None
         try:
             if self.soft_real_time:
                 os.sched_setaffinity(0, {self.rt_core})
@@ -202,7 +211,9 @@ class RTDERobotiqController(mp.Process):
             # 1) Connect to gripper
             gr = RobotiqGripper()
             gr.connect(self.hostname, self.port)
-            gr.activate()
+            if self.min_position is not None and self.max_position is not None:
+                gr.set_position_range(self.min_position, self.max_position)
+            gr.activate(auto_calibrate=self.auto_calibrate)
 
             keep_running = True
             iter_idx = 0
@@ -217,6 +228,8 @@ class RTDERobotiqController(mp.Process):
                 current_pos = float(gr.get_current_position())
                 state = {
                     'width': current_pos,
+                    'min_position': float(gr.get_min_position()),
+                    'max_position': float(gr.get_max_position()),
                     'object_status': int(gr._get_var(gr.OBJ)),
                     'fault': int(gr._get_var(gr.FLT)),
                     'timestamp': t_now
@@ -261,7 +274,8 @@ class RTDERobotiqController(mp.Process):
 
         finally:
             self.ready_event.set()
-            gr.disconnect()
+            if gr is not None:
+                gr.disconnect()
 
 
 class RobotiqGripper:
@@ -462,6 +476,21 @@ class RobotiqGripper:
         """Returns what is considered the closed position for gripper (maximum position value)."""
         return self.get_max_position()
 
+    def set_position_range(self, min_position: int, max_position: int) -> None:
+        """Set the calibrated open/closed encoder bounds without moving the gripper."""
+        min_position = int(min_position)
+        max_position = int(max_position)
+        if not 0 <= min_position <= 255:
+            raise ValueError(f"Invalid Robotiq min position: {min_position}")
+        if not 0 <= max_position <= 255:
+            raise ValueError(f"Invalid Robotiq max position: {max_position}")
+        if min_position >= max_position:
+            raise ValueError(
+                f"Invalid Robotiq position range: min={min_position}, max={max_position}"
+            )
+        self._min_position = min_position
+        self._max_position = max_position
+
     def is_open(self):
         """Returns whether the current position is considered as being fully open."""
         return self.get_current_position() <= self.get_open_position()
@@ -582,4 +611,3 @@ if __name__ == "__main__":
         pos = int(128 + 100 * math.sin(phase))
         gripper.push_position(pos)
         time.sleep(dt)
-

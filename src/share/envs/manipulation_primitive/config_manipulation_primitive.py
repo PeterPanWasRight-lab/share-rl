@@ -628,6 +628,9 @@ class ManipulationPrimitiveConfig(EnvConfig, ChoiceRegistry):
         return start_pose, target_pose
 
 
+ManipulationPrimitiveConfig.register_subclass("primitive", ManipulationPrimitiveConfig)
+
+
 @ManipulationPrimitiveConfig.register_subclass("move_delta")
 @dataclass
 class MoveDeltaPrimitiveConfig(ManipulationPrimitiveConfig):
