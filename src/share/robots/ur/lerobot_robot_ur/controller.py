@@ -880,10 +880,14 @@ class RTDETaskFrameController(mp.Process):
                 raise ValueError("UR joint-space control only supports POS axes")
 
             for axis in range(6):
+                was_relative_pos = (
+                    self.control_mode[axis] == ControlMode.POS
+                    and self.delta_mode[axis] == DeltaMode.RELATIVE
+                )
                 became_relative_pos = (
-                    new_control_mode[axis] != self.control_mode[axis]
-                    and new_control_mode[axis] == ControlMode.POS
+                    new_control_mode[axis] == ControlMode.POS
                     and new_delta_mode[axis] == DeltaMode.RELATIVE
+                    and not was_relative_pos
                 )
                 if not became_relative_pos:
                     continue

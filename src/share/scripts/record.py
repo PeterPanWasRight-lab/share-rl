@@ -87,6 +87,7 @@ def record_loop(
     # check if we need to terminate early, ie during reset
     info = transition.get(TransitionKey.INFO, {})
     if has_event(info, TeleopEvents.STOP_RECORDING):
+        mp_net.stop()
         return info
 
     # get task description
@@ -137,6 +138,7 @@ def record_loop(
             has_event(info, TeleopEvents.INTERVENTION_COMPLETED)
         )
         if intervention_segment_finished or has_event(info, TeleopEvents.STOP_RECORDING):
+            mp_net.stop()
             return info
 
         # (4) Store transition. In correction-only mode, only intervention steps are saved.
@@ -174,6 +176,7 @@ def record_loop(
             truncated or
             has_event(info, TeleopEvents.RERECORD_EPISODE)
         ):
+            mp_net.stop()
             return info
 
         # (7) Handle frequency

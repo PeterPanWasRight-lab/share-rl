@@ -31,10 +31,10 @@ class MPNetTrainRLServerPipelineConfig(TrainRLServerPipelineConfig):
         else:
             self.output_dir = Path(self.output_dir)
 
-        # We need a top-level policy for logging, use the first one
-        policies = [p.policy for p in self.env.primitives.values() if p.policy is not None]
-        if policies:
-            self.policy = policies[0]
+        if self.policy is None:
+            policies = [p.policy for p in self.env.primitives.values() if p.policy is not None]
+            if policies:
+                self.policy = policies[0]
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        _ = build_adaptive_registry(self.env, self.policy)
+        _ = build_adaptive_registry(self.env)

@@ -59,6 +59,7 @@ class ManipulationPrimitiveNet(gym.Env):
         self._primitive_step_count = 0
         self._needs_full_reset = True
         self._step_info: dict[str, Any] = {}
+        self._last_stepped_primitive: str | None = None
 
     @property
     def active_primitive(self) -> str:
@@ -158,6 +159,14 @@ class ManipulationPrimitiveNet(gym.Env):
             del self._action_processors[k]
             del self._env_processors[k]
 
+    def stop(self) -> None:
+        """Hold the pose commanded by the primitive that stepped most recently."""
+        primitive_name = self._last_stepped_primitive or self._active
+        env = self._envs.get(primitive_name)
+        if env is None:
+            return
+        env.stop()
+
     def set_step_info(self, info: dict[str, Any] | None) -> None:
         """Set fixed info flags to seed every outer `step(action)` call."""
 
@@ -179,6 +188,7 @@ class ManipulationPrimitiveNet(gym.Env):
         if active not in self._envs:
             raise KeyError(f"Unknown active primitive '{active}'.")
         primitive = self.config.primitives[active]
+        self._last_stepped_primitive = active
 
         # 1) Process action
         info = dict(self._step_info)

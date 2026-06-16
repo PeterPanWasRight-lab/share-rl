@@ -5,6 +5,7 @@ import os
 import queue
 import shutil
 import time
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ from lerobot.rl.process import ProcessSignalHandler
 from lerobot.rl.wandb_utils import WandBLogger
 from lerobot.transport import services_pb2_grpc
 from lerobot.transport.utils import MAX_MESSAGE_SIZE, bytes_to_python_object, bytes_to_transitions, state_to_bytes
-from lerobot.utils.constants import ACTION, TRAINING_STATE_DIR
+from lerobot.utils.constants import ACTION, DONE, REWARD, TRAINING_STATE_DIR
 from lerobot.utils.random_utils import set_seed
 from lerobot.utils.train_utils import (
     CHECKPOINTS_DIR,
@@ -53,9 +54,6 @@ from share.utils.device import get_safe_torch_device
 from share.utils.logging_utils import primary_loss
 
 
-SEGMENT_END_KEY = "segment_end"
-
-
 @parser.wrap()
 def train_cli(cfg: MPNetTrainRLServerPipelineConfig):
     cfg.validate()
@@ -63,7 +61,7 @@ def train_cli(cfg: MPNetTrainRLServerPipelineConfig):
 
 
 def run_learner(cfg: MPNetTrainRLServerPipelineConfig, shutdown_event: Any | None = None) -> dict[str, Any]:
-    registry = build_adaptive_registry(cfg.env, cfg.policy)
+    registry = build_adaptive_registry(cfg.env)
     is_threaded = _use_threads(registry.actor_learner_policy_cfg)
 
     if not is_threaded:
@@ -312,7 +310,6 @@ def add_actor_information_and_train(
                     policy=policy,
                     optimizers=optimizers[primitive_id],
                     replay_buffer=replay_buffer,
-                    offline_replay_buffer=offline_replay_buffer,
                     fps=cfg.env.fps,
                 )
 
@@ -552,7 +549,14 @@ def process_transitions(
 
         transition_list = bytes_to_transitions(buffer=packed_transitions)
         for index, transition in enumerate(transition_list):
-            transition = move_transition_to_device(transition=transition, device=device)
+            primitive_id = transition.get("id")
+            if primitive_id is None:
+                primitive_id = transition.get("complementary_info", {}).get("primitive_id")
+            if primitive_id is None or primitive_id not in replay_buffers:
+                continue
+
+            storage_device = replay_buffers[primitive_id].storage_device
+            transition = move_transition_to_device(transition=transition, device=storage_device)
             if check_nan_in_transition(
                 observations=transition["state"],
                 actions=transition["action"],
@@ -560,48 +564,12 @@ def process_transitions(
             ):
                 continue
 
-            primitive_id = transition.get("id")
-            if primitive_id is None:
-                primitive_id = transition.get("complementary_info", {}).get("primitive_id")
-            if primitive_id is None or primitive_id not in replay_buffers:
-                continue
-
             payload = {key: value for key, value in transition.items() if key != "id"}
             replay_buffers[primitive_id].add(**payload)
 
             offline_replay_buffer = offline_replay_buffers.get(primitive_id)
             if offline_replay_buffer is not None and transition.get("complementary_info", {}).get("is_intervention"):
-                offline_payload = dict(payload)
-                complementary_info = dict(offline_payload.get("complementary_info") or {})
-                segment_end = _is_intervention_segment_end(
-                    transition_list,
-                    index,
-                    primitive_id,
-                )
-                complementary_info[SEGMENT_END_KEY] = segment_end
-                if segment_end:
-                    offline_payload["done"] = True
-                offline_payload["complementary_info"] = complementary_info
-                offline_replay_buffer.add(**offline_payload)
-
-
-def _is_intervention_segment_end(
-    transition_list: list[dict[str, Any]],
-    index: int,
-    primitive_id: str,
-) -> bool:
-    """Return true at the final step of a contiguous intervention block."""
-    if index + 1 >= len(transition_list):
-        return True
-
-    next_transition = transition_list[index + 1]
-    next_primitive_id = next_transition.get("id")
-    if next_primitive_id is None:
-        next_primitive_id = next_transition.get("complementary_info", {}).get("primitive_id")
-    if next_primitive_id != primitive_id:
-        return True
-
-    return not bool(next_transition.get("complementary_info", {}).get("is_intervention"))
+                offline_replay_buffer.add(**payload)
 
 
 def initialize_replay_buffers(
@@ -639,6 +607,52 @@ def initialize_replay_buffers(
     return replay_buffers
 
 
+def _extract_intervention_transitions(
+    source_buffer: ReplayBuffer,
+    dest_buffer: ReplayBuffer,
+    max_count: int,
+) -> int:
+    """Copy is_intervention=True transitions from source into dest (newest first, up to max_count).
+
+    source_buffer must have been loaded with optimize_memory=False so that next_states are
+    materialised explicitly. Returns the number of transitions copied.
+    """
+    if len(source_buffer) == 0:
+        return 0
+    if not getattr(source_buffer, "has_complementary_info", False):
+        return 0
+    if "is_intervention" not in source_buffer.complementary_info:
+        return 0
+
+    size = len(source_buffer)
+    is_intv = source_buffer.complementary_info["is_intervention"][:size].bool()
+    copied = 0
+    for logical_idx in range(size - 1, -1, -1):  # newest first
+        if not bool(is_intv[logical_idx]):
+            continue
+        idx = (source_buffer.position - size + logical_idx) % source_buffer.capacity
+        state = {k: source_buffer.states[k][idx].unsqueeze(0) for k in source_buffer.states}
+        next_state = {k: source_buffer.next_states[k][idx].unsqueeze(0) for k in source_buffer.states}
+        ci = (
+            {k: source_buffer.complementary_info[k][idx].unsqueeze(0) for k in source_buffer.complementary_info_keys}
+            if source_buffer.has_complementary_info
+            else None
+        )
+        dest_buffer.add(
+            state=state,
+            action=source_buffer.actions[idx].unsqueeze(0),
+            reward=float(source_buffer.rewards[idx]),
+            next_state=next_state,
+            done=bool(source_buffer.dones[idx]),
+            truncated=bool(source_buffer.truncateds[idx]),
+            complementary_info=ci,
+        )
+        copied += 1
+        if copied >= max_count:
+            break
+    return copied
+
+
 def initialize_offline_replay_buffers(
     *,
     cfg: MPNetTrainRLServerPipelineConfig,
@@ -648,46 +662,108 @@ def initialize_offline_replay_buffers(
 ) -> dict[str, ReplayBuffer | None]:
     offline_replay_buffers: dict[str, ReplayBuffer | None] = {}
     for primitive_id, policy in policies.items():
-        dataset_root = _resolve_offline_dataset_root(cfg=cfg, primitive_id=primitive_id)
-        if dataset_root is None:
-            offline_replay_buffers[primitive_id] = ReplayBuffer(
-                capacity=policy.config.offline_buffer_capacity,
-                device=device,
-                storage_device=storage_device,
-                state_keys=policy.config.input_features.keys(),
-                optimize_memory=False,
-            )
-            continue
+        capacity = policy.config.offline_buffer_capacity
+        state_keys = policy.config.input_features.keys()
 
-        repo_id = _dataset_repo_id(cfg=cfg, primitive_id=primitive_id)
-        logging.info("[LEARNER] Loading offline demos for primitive '%s' from %s", primitive_id, dataset_root)
-        offline_dataset = LeRobotDataset(repo_id=repo_id, root=str(dataset_root))
-        offline_replay_buffers[primitive_id] = ReplayBuffer.from_lerobot_dataset(
-            lerobot_dataset=offline_dataset,
-            capacity=policy.config.offline_buffer_capacity,
+        offline_buffer = ReplayBuffer(
+            capacity=capacity,
             device=device,
             storage_device=storage_device,
-            state_keys=policy.config.input_features.keys(),
+            state_keys=state_keys,
             optimize_memory=False,
         )
-        _mark_intervention_segment_ends_terminal(offline_replay_buffers[primitive_id])
+
+        # Phase A: resume — reconstruct intervention corrections from on-policy dataset
+        if cfg.resume:
+            legacy_offline_root = Path(cfg.output_dir) / primitive_id / "dataset-offline"
+            if legacy_offline_root.exists():
+                logging.warning(
+                    "[LEARNER] Found legacy 'dataset-offline' folder at %s — it is no longer used. "
+                    "The offline buffer is now reconstructed from the on-policy dataset. "
+                    "You may delete this folder.",
+                    legacy_offline_root,
+                )
+
+            online_dataset_root = Path(cfg.output_dir) / primitive_id / "dataset"
+            if online_dataset_root.exists():
+                repo_id = _dataset_repo_id(cfg=cfg, primitive_id=primitive_id)
+                logging.info(
+                    "[LEARNER] Reconstructing offline buffer for '%s' from on-policy dataset at %s",
+                    primitive_id,
+                    online_dataset_root,
+                )
+                online_dataset = LeRobotDataset(repo_id=repo_id, root=str(online_dataset_root))
+                temp_buffer = ReplayBuffer.from_lerobot_dataset(
+                    lerobot_dataset=online_dataset,
+                    capacity=len(online_dataset),
+                    device=storage_device,
+                    storage_device=storage_device,
+                    state_keys=state_keys,
+                    optimize_memory=False,
+                )
+                n = _extract_intervention_transitions(temp_buffer, offline_buffer, capacity)
+                logging.info(
+                    "[LEARNER] Extracted %d intervention transitions into offline buffer for '%s'",
+                    n,
+                    primitive_id,
+                )
+
+        # Phase B: external offline demos (always attempted; fills remaining capacity)
+        remaining = capacity - len(offline_buffer)
+        if remaining > 0:
+            external_root = _resolve_external_offline_dataset_root(cfg=cfg, primitive_id=primitive_id)
+            if external_root is not None:
+                repo_id = _dataset_repo_id(cfg=cfg, primitive_id=primitive_id)
+                logging.info(
+                    "[LEARNER] Loading external offline demos for '%s' from %s",
+                    primitive_id,
+                    external_root,
+                )
+                demo_dataset = LeRobotDataset(repo_id=repo_id, root=str(external_root))
+                demo_buffer = ReplayBuffer.from_lerobot_dataset(
+                    lerobot_dataset=demo_dataset,
+                    capacity=min(len(demo_dataset), remaining),
+                    device=device,
+                    storage_device=storage_device,
+                    state_keys=state_keys,
+                    optimize_memory=False,
+                )
+                # Copy all demo transitions (no intervention filter needed for pre-collected demos)
+                size = len(demo_buffer)
+                for logical_idx in range(size - 1, -1, -1):
+                    idx = (demo_buffer.position - size + logical_idx) % demo_buffer.capacity
+                    state = {k: demo_buffer.states[k][idx].unsqueeze(0) for k in demo_buffer.states}
+                    next_state = {k: demo_buffer.next_states[k][idx].unsqueeze(0) for k in demo_buffer.states}
+                    ci = (
+                        {k: demo_buffer.complementary_info[k][idx].unsqueeze(0) for k in demo_buffer.complementary_info_keys}
+                        if demo_buffer.has_complementary_info
+                        else None
+                    )
+                    offline_buffer.add(
+                        state=state,
+                        action=demo_buffer.actions[idx].unsqueeze(0),
+                        reward=float(demo_buffer.rewards[idx]),
+                        next_state=next_state,
+                        done=bool(demo_buffer.dones[idx]),
+                        truncated=bool(demo_buffer.truncateds[idx]),
+                        complementary_info=ci,
+                    )
+                    if len(offline_buffer) >= capacity:
+                        break
+
+        offline_replay_buffers[primitive_id] = offline_buffer
 
     return offline_replay_buffers
 
 
-def _resolve_offline_dataset_root(
+def _resolve_external_offline_dataset_root(
     *,
     cfg: MPNetTrainRLServerPipelineConfig,
     primitive_id: str,
 ) -> Path | None:
-    if cfg.resume:
-        checkpoint_dataset_root = Path(cfg.output_dir) / primitive_id / "dataset-offline"
-        if checkpoint_dataset_root.exists():
-            return checkpoint_dataset_root
-
+    """Return the path to pre-collected external offline demos, if configured."""
     if cfg.dataset is None or cfg.dataset.root is None:
         return None
-
     dataset_root = Path(cfg.dataset.root)
     candidates = [
         dataset_root / primitive_id,
@@ -785,20 +861,20 @@ def save_training_checkpoint(
     policy: SACPolicy,
     optimizers: dict[str, Optimizer],
     replay_buffer: ReplayBuffer,
-    offline_replay_buffer: ReplayBuffer | None,
     fps: int,
 ) -> None:
     primitive_output_dir = Path(cfg.output_dir) / primitive_id
     checkpoint_dir = get_step_checkpoint_dir(primitive_output_dir, online_steps, optimization_step)
     try:
-        save_checkpoint(
-            checkpoint_dir=checkpoint_dir,
-            step=optimization_step,
-            cfg=cfg,
-            policy=policy,
-            optimizer=optimizers,
-            scheduler=None,
-        )
+        with _checkpoint_safe_runtime_config(cfg):
+            save_checkpoint(
+                checkpoint_dir=checkpoint_dir,
+                step=optimization_step,
+                cfg=cfg,
+                policy=policy,
+                optimizer=optimizers,
+                scheduler=None,
+            )
     except Exception as exc:  # noqa: BLE001
         logging.warning(
             "[LEARNER] fallback checkpoint for primitive '%s' at step %s due to save_checkpoint error: %s",
@@ -837,10 +913,12 @@ def save_training_checkpoint(
     repo_id = _dataset_repo_id(cfg=cfg, primitive_id=primitive_id)
 
     if len(replay_buffer) > 0:
-        replay_buffer.to_lerobot_dataset(
+        _save_replay_buffer_to_lerobot_dataset(
+            replay_buffer,
             repo_id=repo_id,
             fps=fps,
             root=str(dataset_dir),
+            task_name=primitive_id,
         )
     else:
         logging.info(
@@ -849,19 +927,6 @@ def save_training_checkpoint(
             optimization_step,
         )
 
-    if offline_replay_buffer is None or len(offline_replay_buffer) == 0:
-        return
-
-    offline_dataset_dir = primitive_output_dir / "dataset-offline"
-    if offline_dataset_dir.exists():
-        shutil.rmtree(offline_dataset_dir)
-    _save_replay_buffer_to_lerobot_dataset(
-        offline_replay_buffer,
-        repo_id=repo_id,
-        fps=fps,
-        root=str(offline_dataset_dir),
-        split_on_segment_end=True,
-    )
 
 
 def _num_td_valid_offline_samples(replay_buffer: ReplayBuffer) -> int:
@@ -900,27 +965,12 @@ def _td_valid_offline_iterator(replay_buffer: ReplayBuffer, batch_size: int):
 
 def _td_valid_offline_mask(replay_buffer: ReplayBuffer) -> torch.Tensor:
     size = len(replay_buffer)
-    valid = torch.ones(size, dtype=torch.bool, device=replay_buffer.storage_device)
-    if not getattr(replay_buffer, "has_complementary_info", False):
-        return valid
-    complementary_info = getattr(replay_buffer, "complementary_info", {})
-    if SEGMENT_END_KEY not in complementary_info:
-        return valid
-
-    segment_end = complementary_info[SEGMENT_END_KEY][:size].bool()
-    done = replay_buffer.dones[:size].bool()
-    truncated = replay_buffer.truncateds[:size].bool()
-    return valid & ~(segment_end & ~done & ~truncated)
+    return torch.ones(size, dtype=torch.bool, device=replay_buffer.storage_device)
 
 
 def _td_valid_batch_mask(batch: dict[str, Any]) -> torch.Tensor:
     done = batch["done"].bool()
-    truncated = batch["truncated"].bool()
-    info = batch.get("complementary_info") or {}
-    segment_end = info.get(SEGMENT_END_KEY)
-    if segment_end is None:
-        return torch.ones_like(done, dtype=torch.bool)
-    return ~(segment_end.bool() & ~done & ~truncated)
+    return torch.ones_like(done, dtype=torch.bool)
 
 
 def _filter_batch_transition(batch: dict[str, Any], keep: torch.Tensor) -> dict[str, Any]:
@@ -943,38 +993,154 @@ def _save_replay_buffer_to_lerobot_dataset(
     repo_id: str,
     fps: int,
     root: str,
-    split_on_segment_end: bool = False,
+    task_name: str = "from_replay_buffer",
 ):
-    if not split_on_segment_end or not getattr(replay_buffer, "has_complementary_info", False):
-        return replay_buffer.to_lerobot_dataset(repo_id=repo_id, fps=fps, root=root)
-
-    complementary_info = getattr(replay_buffer, "complementary_info", {})
-    if SEGMENT_END_KEY not in complementary_info:
-        return replay_buffer.to_lerobot_dataset(repo_id=repo_id, fps=fps, root=root)
-
-    original_dones = replay_buffer.dones.clone()
-    try:
-        _mark_intervention_segment_ends_terminal(replay_buffer)
-        return replay_buffer.to_lerobot_dataset(repo_id=repo_id, fps=fps, root=root)
-    finally:
-        replay_buffer.dones.copy_(original_dones)
-
-
-def _mark_intervention_segment_ends_terminal(replay_buffer: ReplayBuffer) -> None:
-    """Treat correction-only segment boundaries as terminal for replay semantics."""
-    if len(replay_buffer) == 0 or not getattr(replay_buffer, "has_complementary_info", False):
-        return
-
-    complementary_info = getattr(replay_buffer, "complementary_info", {})
-    if SEGMENT_END_KEY not in complementary_info:
-        return
-
-    size = len(replay_buffer)
-    segment_end = complementary_info[SEGMENT_END_KEY][:size].to(
-        device=replay_buffer.dones.device,
-        dtype=torch.bool,
+    return _replay_buffer_to_lerobot_dataset(
+        replay_buffer,
+        repo_id=repo_id,
+        fps=fps,
+        root=root,
+        task_name=task_name,
     )
-    replay_buffer.dones[:size] = replay_buffer.dones[:size].bool() | segment_end
+
+
+@contextmanager
+def _checkpoint_safe_runtime_config(cfg: MPNetTrainRLServerPipelineConfig):
+    """Temporarily clear runtime-only config handles that checkpoint serialization cannot encode."""
+    robot_cfgs = getattr(getattr(cfg, "env", None), "robot", None)
+    if not isinstance(robot_cfgs, dict):
+        yield
+        return
+
+    original_shm_managers: dict[str, Any] = {}
+    try:
+        for robot_name, robot_cfg in robot_cfgs.items():
+            if robot_cfg is None or not hasattr(robot_cfg, "shm_manager"):
+                continue
+            original_shm_managers[robot_name] = robot_cfg.shm_manager
+            robot_cfg.shm_manager = None
+        yield
+    finally:
+        for robot_name, shm_manager in original_shm_managers.items():
+            robot_cfg = robot_cfgs.get(robot_name)
+            if robot_cfg is not None:
+                robot_cfg.shm_manager = shm_manager
+
+
+def _replay_buffer_to_lerobot_dataset(
+    replay_buffer: ReplayBuffer,
+    *,
+    repo_id: str,
+    fps: int,
+    root: str,
+    task_name: str,
+) -> LeRobotDataset:
+    if len(replay_buffer) == 0:
+        raise ValueError("The replay buffer is empty. Cannot convert to a dataset.")
+
+    dataset = LeRobotDataset.create(
+        repo_id=repo_id,
+        fps=fps,
+        root=root,
+        robot_type=None,
+        features=_replay_buffer_dataset_features(replay_buffer),
+        use_videos=False,
+    )
+
+    pending_episode_frames = 0
+    try:
+        for idx in range(len(replay_buffer)):
+            actual_idx = (replay_buffer.position - replay_buffer.size + idx) % replay_buffer.capacity
+            frame_dict: dict[str, Any] = {
+                ACTION: replay_buffer.actions[actual_idx].cpu(),
+                "task": task_name,
+            }
+
+            for key in replay_buffer.states:
+                frame_dict[key] = replay_buffer.states[key][actual_idx].cpu()
+
+            frame_dict[REWARD] = torch.tensor([replay_buffer.rewards[actual_idx]], dtype=torch.float32).cpu()
+            frame_dict[DONE] = torch.tensor([replay_buffer.dones[actual_idx]], dtype=torch.bool).cpu()
+
+            if getattr(replay_buffer, "has_complementary_info", False):
+                for key in replay_buffer.complementary_info_keys:
+                    value = replay_buffer.complementary_info[key][actual_idx]
+                    if isinstance(value, torch.Tensor) and value.ndim == 0:
+                        value = value.unsqueeze(0)
+                    frame_dict[f"complementary_info.{key}"] = value.cpu()
+
+            dataset.add_frame(frame_dict)
+            pending_episode_frames += 1
+            if replay_buffer.dones[actual_idx] or replay_buffer.truncateds[actual_idx]:
+                dataset.save_episode()
+                pending_episode_frames = 0
+
+        if pending_episode_frames > 0:
+            dataset.save_episode()
+    finally:
+        if hasattr(dataset, "finalize"):
+            dataset.finalize()
+
+    return dataset
+
+
+def _replay_buffer_dataset_features(replay_buffer: ReplayBuffer) -> dict[str, dict[str, Any]]:
+    features = {
+        "index": {"dtype": "int64", "shape": (1,), "names": None},
+        "episode_index": {"dtype": "int64", "shape": (1,), "names": None},
+        "frame_index": {"dtype": "int64", "shape": (1,), "names": None},
+        "timestamp": {"dtype": "float32", "shape": (1,), "names": None},
+        "task_index": {"dtype": "int64", "shape": (1,), "names": None},
+        ACTION: _tensor_to_dataset_feature(replay_buffer.actions[0]),
+        REWARD: {"dtype": "float32", "shape": (1,), "names": None},
+        DONE: {"dtype": "bool", "shape": (1,), "names": None},
+    }
+
+    for key, value in replay_buffer.states.items():
+        features[key] = _tensor_to_dataset_feature(value[0])
+
+    if getattr(replay_buffer, "has_complementary_info", False):
+        for key in replay_buffer.complementary_info_keys:
+            value = replay_buffer.complementary_info[key][0]
+            if isinstance(value, torch.Tensor) and value.ndim == 0:
+                value = value.unsqueeze(0)
+            features[f"complementary_info.{key}"] = _tensor_to_dataset_feature(value)
+
+    return features
+
+
+def _tensor_to_dataset_feature(value: torch.Tensor) -> dict[str, Any]:
+    if value.ndim == 0:
+        value = value.unsqueeze(0)
+
+    shape = tuple(value.shape)
+    if len(shape) == 3 and shape[0] in (1, 3):
+        return {
+            "dtype": "image",
+            "shape": shape,
+            "names": ["channels", "height", "width"],
+        }
+
+    if value.dtype == torch.bool:
+        dtype = "bool"
+    elif value.dtype.is_floating_point:
+        dtype = "float32"
+    elif value.dtype in {
+        torch.uint8,
+        torch.int8,
+        torch.int16,
+        torch.int32,
+        torch.int64,
+    }:
+        dtype = "int64"
+    else:
+        raise TypeError(f"Unsupported replay buffer tensor dtype '{value.dtype}' for dataset export.")
+
+    return {
+        "dtype": dtype,
+        "shape": shape,
+        "names": None,
+    }
 
 
 def start_learner_server(

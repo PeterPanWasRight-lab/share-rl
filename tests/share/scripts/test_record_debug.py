@@ -25,6 +25,7 @@ class _FakeMPNet:
     def __init__(self):
         self.action_dim = 1
         self.active_primitive = "pick"
+        self.stop_calls = 0
         self.config = SimpleNamespace(
             fps=1000,
             type="mock_robot",
@@ -55,6 +56,9 @@ class _FakeMPNet:
             },
         )
 
+    def stop(self):
+        self.stop_calls += 1
+
 
 class _FakeDebugger:
     def __init__(self):
@@ -71,8 +75,10 @@ def test_record_loop_emits_debugger_reset_and_step_events():
     dataset = _FakeDataset()
     debugger = _FakeDebugger()
 
+    mp_net = _FakeMPNet()
+
     info = record_loop(
-        mp_net=_FakeMPNet(),
+        mp_net=mp_net,
         datasets={"pick": dataset},
         policies={},
         preprocessors={},
@@ -83,5 +89,6 @@ def test_record_loop_emits_debugger_reset_and_step_events():
     assert [call[0] for call in debugger.calls] == ["reset", "step"]
     assert len(dataset.frames) == 1
     assert dataset.frames[0]["task"] == "pick task"
+    assert mp_net.stop_calls == 1
     assert info["transition_from"] == "pick"
     assert info["transition_to"] == "pick"

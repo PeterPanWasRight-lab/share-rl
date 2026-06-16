@@ -8,7 +8,7 @@ from lerobot.utils.constants import OBS_IMAGES
 from lerobot.cameras import Camera
 from lerobot.robots import Robot
 
-from share.envs.manipulation_primitive.task_frame import TaskFrame
+from share.envs.manipulation_primitive.task_frame import ControlMode, ControlSpace, TASK_FRAME_AXIS_NAMES, TaskFrame
 from share.envs.utils import check_task_frame_robot
 from share.teleoperators import TeleopEvents
 
@@ -112,6 +112,44 @@ class ManipulationPrimitive(gymnasium.Env):
         for robot_dict in self.robot_dict.values():
             if robot_dict.is_connected:
                 robot_dict.disconnect()
+
+    def stop(self) -> None:
+        """Hold the current robot pose with a position command."""
+        for name, robot in self.robot_dict.items():
+            if not getattr(robot, "is_connected", False):
+                continue
+
+            frame = self.task_frame.get(name)
+            observation = robot.get_observation()
+            action: dict[str, float] = {}
+
+            if frame is not None and frame.space == ControlSpace.TASK and self._is_task_frame_robot.get(name, False):
+                for axis, axis_name in enumerate(TASK_FRAME_AXIS_NAMES):
+                    key = f"{axis_name}.ee_pos"
+                    if key not in observation:
+                        continue
+                    value = float(observation[key])
+                    action[key] = value
+                    frame.target[axis] = value
+                    frame.control_mode[axis] = ControlMode.POS
+            else:
+                joint_names = list(frame.joint_names) if frame is not None and frame.joint_names is not None else [
+                    key.removesuffix(".pos")
+                    for key in observation
+                    if key.endswith(".pos") and ".ee_" not in key and key != "gripper.pos"
+                ]
+                for axis, joint_name in enumerate(joint_names):
+                    key = f"{joint_name}.pos"
+                    if key not in observation:
+                        continue
+                    value = float(observation[key])
+                    action[key] = value
+                    if frame is not None and axis < len(frame.target):
+                        frame.target[axis] = value
+                        frame.control_mode[axis] = ControlMode.POS
+
+            if action:
+                robot.send_action(action)
 
     def apply_task_frames(self) -> None:
         """Re-send the current task frame to every robot that supports it."""

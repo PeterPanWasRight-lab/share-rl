@@ -1,4 +1,5 @@
 import copy
+import time
 from dataclasses import dataclass, field, fields
 from typing import Any, Literal
 
@@ -629,6 +630,46 @@ class ManipulationPrimitiveConfig(EnvConfig, ChoiceRegistry):
 
 
 ManipulationPrimitiveConfig.register_subclass("primitive", ManipulationPrimitiveConfig)
+
+
+@ManipulationPrimitiveConfig.register_subclass("zero_ft")
+@dataclass
+class ZeroFTPrimitiveConfig(ManipulationPrimitiveConfig):
+    """Scripted primitive that holds the entry pose, re-zeros F/T, and exits."""
+
+    settle_duration_s: float = 0.3
+
+    def validate(self, robot_dict, teleop_dict):
+        super().validate(robot_dict, teleop_dict)
+        if self.policy is not None:
+            raise ValueError("zero_ft is scripted-only and must not configure a policy.")
+        if self.settle_duration_s < 0.0:
+            raise ValueError("zero_ft settle_duration_s must be >= 0.")
+
+    def make(
+        self,
+        robot_dict,
+        teleop_dict,
+        cameras,
+        device: str = "cpu",
+    ):
+        env, env_processor, action_processor = super().make(robot_dict, teleop_dict, cameras, device)
+        env.uses_autonomous_step = True
+        return env, env_processor, action_processor
+
+    def on_entry(self, env: ManipulationPrimitive, entry_context: PrimitiveEntryContext | None) -> None:
+        start_pose, _target_pose = self.resolve_targets(entry_context)
+        env.set_target_pose(start_pose, info_key=self.target_pose_info_key)
+        env.apply_task_frames()
+
+        time.sleep(self.settle_duration_s)
+        for robot in env.robot_dict.values():
+            controller = getattr(robot, "controller", None)
+            if controller is None or not hasattr(controller, "zero_ft"):
+                raise AttributeError("zero_ft primitive requires robots with a controller.zero_ft() method")
+            controller.zero_ft()
+
+        env._primitive_complete = True
 
 
 @ManipulationPrimitiveConfig.register_subclass("move_delta")

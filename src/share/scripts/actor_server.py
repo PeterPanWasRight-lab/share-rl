@@ -60,7 +60,7 @@ def actor_cli(cfg: MPNetTrainRLServerPipelineConfig):
 
 
 def run_actor(cfg: MPNetTrainRLServerPipelineConfig, shutdown_event: Any | None = None) -> dict[str, Any]:
-    registry = build_adaptive_registry(cfg.env, cfg.policy)
+    registry = build_adaptive_registry(cfg.env)
     is_threaded = _use_threads(registry.actor_learner_policy_cfg)
 
     if not is_threaded:
@@ -69,7 +69,9 @@ def run_actor(cfg: MPNetTrainRLServerPipelineConfig, shutdown_event: Any | None 
         mp.set_start_method("spawn")
 
     # Initialize robot/env first, before any gRPC
+    print("[ACTOR] Initializing environment...")
     mp_net = ManipulationPrimitiveNet(cfg.env)
+    print("[ACTOR] Environment initialized successfully.")
 
     external_shutdown_event = shutdown_event
     if external_shutdown_event is None:
@@ -198,6 +200,7 @@ def act_with_policy(
     preprocessors, postprocessors = make_policy_processors(policies)
     collection_counts = {primitive_id: 0 for primitive_id in registry.adaptive_ids}
     applied_parameter_updates = 0
+    waiting_for_initial_policy_warning_emitted = False
 
     def reset_segment_state() -> dict[str, Any]:
         return {
@@ -234,20 +237,53 @@ def act_with_policy(
         if policy is not None and hasattr(policy, "reset"):
             policy.reset()
 
-    # Give the streaming worker a short window to fetch initial learner parameters.
-    push_frequency = registry.actor_learner_policy_cfg.actor_learner_config.policy_parameters_push_frequency
-    warmup_deadline = time.time() + max(5.0, 20.0 * push_frequency)
-    while time.time() < warmup_deadline and not shutdown_event.is_set():
-        consumed_updates = apply_parameter_updates_from_queue(
-            policies=policies,
-            parameters_queue=parameters_queue,
-            device=device,
+    start_primitive = env.config.start_primitive
+    start_requires_policy = start_primitive in policies
+    if start_requires_policy:
+        # If startup begins in a policy-controlled primitive, give the learner a
+        # short head start so the first rollout does not use random weights.
+        push_frequency = registry.actor_learner_policy_cfg.actor_learner_config.policy_parameters_push_frequency
+        warmup_timeout_s = max(5.0, 20.0 * push_frequency)
+        warmup_deadline = time.time() + warmup_timeout_s
+        next_status_log_t = time.time()
+        logging.info(
+            "[ACTOR] Waiting up to %.1fs for initial learner parameters before entering policy primitive '%s'",
+            warmup_timeout_s,
+            start_primitive,
         )
-        applied_parameter_updates += consumed_updates
-        if consumed_updates > 0:
-            break
-        time.sleep(0.01)
+        while time.time() < warmup_deadline and not shutdown_event.is_set():
+            consumed_updates = apply_parameter_updates_from_queue(
+                policies=policies,
+                parameters_queue=parameters_queue,
+                device=device,
+            )
+            applied_parameter_updates += consumed_updates
+            if consumed_updates > 0:
+                logging.info(
+                    "[ACTOR] Applied %s initial learner parameter update(s) before startup",
+                    consumed_updates,
+                )
+                break
 
+            if time.time() >= next_status_log_t:
+                remaining_s = max(0.0, warmup_deadline - time.time())
+                logging.info(
+                    "[ACTOR] Still waiting for initial learner parameters (%.1fs remaining)",
+                    remaining_s,
+                )
+                next_status_log_t = time.time() + 5.0
+            time.sleep(0.01)
+        else:
+            logging.warning(
+                "[ACTOR] No learner parameters arrived during startup warmup; continuing with local policy state"
+            )
+    else:
+        logging.info(
+            "[ACTOR] Start primitive '%s' is scripted/teleop-only; skipping initial parameter warmup",
+            start_primitive,
+        )
+
+    logging.info("[ACTOR] Resetting MP-Net into start primitive '%s'", start_primitive)
     transition = env.reset()
     reset_active_policy()
     segment_state = reset_segment_state()
@@ -268,6 +304,12 @@ def act_with_policy(
             applied_parameter_updates += consumed_updates
 
             if policy is not None:
+                if applied_parameter_updates == 0 and not waiting_for_initial_policy_warning_emitted:
+                    logging.warning(
+                        "[ACTOR] Entered policy primitive '%s' before any learner parameters arrived; acting with local policy state",
+                        active_primitive,
+                    )
+                    waiting_for_initial_policy_warning_emitted = True
                 inference_t0 = time.perf_counter()
 
                 policy_obs = {key: value for key, value in obs.items() if key in policy.config.input_features}
@@ -356,6 +398,7 @@ def act_with_policy(
                         parameters_queue=parameters_queue,
                         device=device,
                     )
+                    waiting_for_initial_policy_warning_emitted = applied_parameter_updates == 0
 
                 transition = env.reset()
                 reset_active_policy()

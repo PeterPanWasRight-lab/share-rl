@@ -70,24 +70,15 @@ class PrimitiveBudgetCounter:
 
 
 def _policy_for_primitive(
-    primitive_policy: Any | None,
-    fallback_policy: SACConfig | None,
+    primitive_policy: Any,
     primitive_overwrites: dict[str, Any],
 ) -> SACConfig:
-    if primitive_policy is not None:
-        if not isinstance(primitive_policy, SACConfig):
-            raise TypeError(
-                "MP-Net RL server currently requires SAC policies for adaptive primitives. "
-                f"Got '{type(primitive_policy).__name__}'."
-            )
-        policy_cfg = copy.deepcopy(primitive_policy)
-    elif fallback_policy is not None:
-        policy_cfg = copy.deepcopy(fallback_policy)
-    else:
-        raise ValueError(
-            "Missing SAC policy for adaptive primitive. Configure primitive.policy "
-            "or provide a top-level fallback policy."
+    if not isinstance(primitive_policy, SACConfig):
+        raise TypeError(
+            "MP-Net RL server currently requires SAC policies for adaptive primitives. "
+            f"Got '{type(primitive_policy).__name__}'."
         )
+    policy_cfg = copy.deepcopy(primitive_policy)
 
     for key, value in primitive_overwrites.items():
         setattr(policy_cfg, key, value)
@@ -96,7 +87,6 @@ def _policy_for_primitive(
 
 def build_adaptive_registry(
     env_cfg: ManipulationPrimitiveNetConfig,
-    fallback_policy: SACConfig | None,
 ) -> AdaptivePrimitiveRegistry:
     adaptive_ids: list[str] = []
     policy_cfgs: dict[str, SACConfig] = {}
@@ -107,10 +97,11 @@ def build_adaptive_registry(
             continue
         if not primitive.is_adaptive:
             continue
+        if primitive.policy is None:
+            continue
 
         policy_cfg = _policy_for_primitive(
             primitive_policy=primitive.policy,
-            fallback_policy=fallback_policy,
             primitive_overwrites=primitive.policy_overwrites,
         )
         adaptive_ids.append(primitive_id)
@@ -119,7 +110,8 @@ def build_adaptive_registry(
 
     if not adaptive_ids:
         raise ValueError(
-            "No adaptive primitives with SAC policy config found (reset_primitive is excluded by default)."
+            "No adaptive primitives with explicit SAC policy config found "
+            "(reset_primitive is excluded by default)."
         )
 
     id_to_index = {primitive_id: index for index, primitive_id in enumerate(adaptive_ids)}
