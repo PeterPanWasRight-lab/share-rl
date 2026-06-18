@@ -77,7 +77,8 @@ def record_loop(
 ):
     # reset
     transition = mp_net.reset()
-    if mp_net.active_primitive in policies:
+    policy = policies.get(mp_net.active_primitive, None)
+    if policy is not None:
         policies[mp_net.active_primitive].reset()
     if debugger is not None:
         debugger.log_reset(mp_net, transition)
@@ -103,7 +104,7 @@ def record_loop(
         if policy is not None:
             # noinspection PyTypeChecker
             action = predict_action(
-                observation={key: obs[key] for key in policy.config.input_features},
+                observation={key: obs[key] for key in policy.config.input_features if key in obs},
                 policy=policy,
                 device=get_safe_torch_device(policy.config.device),
                 preprocessor=preprocessors[mp_net.active_primitive],
