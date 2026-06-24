@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from lerobot.cameras import Camera
 from lerobot.envs import EnvConfig
@@ -92,18 +94,9 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
     start_primitive: str = "move_to_scan_pose"
     reset_primitive: str = "move_to_scan_pose"
     camera_serial_number: str = "352122271533"
-
-    scan_pose: list[float] = field(default_factory=lambda: [-0.23552485078806693, -0.27116002789910776, 0.37228272132740536, 1.9188068639552711, 0.0017689096521515957, -1.6494817075949697])
-    scan_pose_2: list[float] = field(default_factory=lambda: [-0.31169864008803394, -0.2704242243991801, 0.2899598338831783, 1.8875908709963132, -0.06287159096366723, -1.609617948354109])
-    stretch_pose: list[float] = field(default_factory=lambda: [-0.3879, -0.2751, 0.2226, 1.5888, -0.0644, -1.662])
-    plug_pose: list[float] = field(default_factory=lambda: [-0.20310489971477347, -0.34529285807579696, 0.1894367040218624, 2.5756071290528713, -0.0023949499862503387, -1.5539570934357796])
+    object_dir: str = ""
 
     target_tolerance: list[float] = field(default_factory=lambda: [0.01, 0.01, 0.01, 0.10, 0.10, 0.10])
-
-    path_pose : list[float] = field(default_factory=lambda:[-0.2901358445965176, -0.23288848515893296, 0.3625410451634672, 2.449444249306145, -0.09502183864460467, -1.4990255343351544])
-
-    grasp_pose_in_object_frame: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    grasp_pose_in_object_frame_2: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     closed_gripper_position: float = 1.0
     open_gripper_position: float = 0.0
     gripper_hold_steps: int = 15
@@ -113,6 +106,17 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
         return super().make()
 
     def __post_init__(self) -> None:
+        object_dir = Path(self.object_dir)
+        grasp_obj = str(object_dir / "object_spec.json")
+
+        poses = json.loads((object_dir / "poses.json").read_text())
+        scan_pose = poses["estimation_pose_top"]
+        scan_pose_2 = poses["estimation_pose_stretched"]
+        stretch_pose = poses["stretch_pose"]
+        plug_pose = poses["plug_pose"]
+        grasp_pose_hanging = poses["grasp_pose_hanging"]
+        grasp_pose_insert = poses["grasp_pose_insert"]
+
         move_processor = _shared_processor(self.open_gripper_position)
         close_gripper_processor = _shared_processor(self.closed_gripper_position)
         open_gripper_processor = _shared_processor(self.open_gripper_position)
@@ -134,35 +138,28 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
         }
 
         self.primitives = {
-            "move_to_scan_pose": get_target_prim_cfg(self.scan_pose, move_processor),
+            "move_to_scan_pose": get_target_prim_cfg(scan_pose, move_processor),
             "estimate_object_pose": FoundationPosePrimitiveConfig(
-                # processor=move_processor,
                 notes="Move the UR5e to the predefined scan pose before running FoundationPose.",
                 task_description="estimate object pose",
-                grasp_obj="/home/jzilke/ws/share-rl-pe/hoermann_objects/power_connector/object_spec.json"
+                grasp_obj=grasp_obj,
             ),
-            "move_to_grasp_pose": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame, move_processor),
-            "close_gripper": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame, close_gripper_processor),
-            "move_to_stretch_pose": get_target_prim_cfg(self.stretch_pose, close_gripper_processor),
-            "open_gripper": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame, open_gripper_processor),
+            "move_to_grasp_pose": get_object_relative_grasp_prim_cfg(grasp_pose_hanging, move_processor),
+            "close_gripper": get_object_relative_grasp_prim_cfg(grasp_pose_hanging, close_gripper_processor),
+            "move_to_stretch_pose": get_target_prim_cfg(stretch_pose, close_gripper_processor),
+            "open_gripper": get_object_relative_grasp_prim_cfg(grasp_pose_hanging, open_gripper_processor),
 
-            # "move_to_path": get_target_prim_cfg(self.path_pose, move_processor),
-
-            "move_to_scan_pose_2": get_target_prim_cfg(self.scan_pose_2, open_gripper_processor),
+            "move_to_scan_pose_2": get_target_prim_cfg(scan_pose_2, open_gripper_processor),
             "estimate_object_pose_2": FoundationPosePrimitiveConfig(
-                # processor=move_processor,
                 notes="Move the UR5e to the predefined scan pose before running FoundationPose.",
                 task_description="estimate object pose",
-                grasp_obj="/home/jzilke/ws/share-rl-pe/hoermann_objects/power_connector/object_spec.json"
+                grasp_obj=grasp_obj,
             ),
-            "move_to_grasp_pose_2": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame_2, move_processor),
-            "close_gripper_2": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame_2,
-                                                                close_gripper_processor),
-            "move_to_plug_pose": get_target_prim_cfg(self.plug_pose, close_gripper_processor),
-            "move_to_scan_pose_3": get_target_prim_cfg(self.scan_pose, open_gripper_processor),
-            "open_gripper_2": get_object_relative_grasp_prim_cfg(self.grasp_pose_in_object_frame_2, open_gripper_processor),
-
-
+            "move_to_grasp_pose_2": get_object_relative_grasp_prim_cfg(grasp_pose_insert, move_processor),
+            "close_gripper_2": get_object_relative_grasp_prim_cfg(grasp_pose_insert, close_gripper_processor),
+            "move_to_plug_pose": get_target_prim_cfg(plug_pose, close_gripper_processor),
+            "move_to_scan_pose_3": get_target_prim_cfg(scan_pose, open_gripper_processor),
+            "open_gripper_2": get_object_relative_grasp_prim_cfg(grasp_pose_insert, open_gripper_processor),
         }
         self.transitions = [
             OnTargetPoseReached(
