@@ -894,6 +894,9 @@ class RTDETaskFrameController(mp.Process):
             self.delta_mode = new_delta_mode.copy()
             if new_space == ControlSpace.TASK and not self.force_on:
                 self._enter_task_force_mode(rtde_c)
+            elif not self._use_force_mode and self.force_on:
+                rtde_c.forceModeStop()
+                self.force_on = False
 
         return keep_running, active_space, x_cmd, q_cmd
 
