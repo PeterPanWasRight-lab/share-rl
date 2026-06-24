@@ -59,7 +59,8 @@ class TaskFrameCommand(TaskFrame):
         "compliance_adaptive_limit_enable",
         "compliance_desired_wrench",
         "compliance_adaptive_limit_min",
-        "rotation_interval_modes"
+        "rotation_interval_modes",
+        "use_force_mode",
     }
 
     @property
@@ -105,6 +106,7 @@ class TaskFrameCommand(TaskFrame):
             d["compliance_reference_limit_enable"] = np.asarray(raw_overrides.get("compliance_reference_limit_enable", [False] * 6)).astype(np.bool_)
             d["compliance_desired_wrench"] = np.asarray(raw_overrides.get("compliance_desired_wrench", [5.0, 5.0, 5.0, 0.5, 0.5, 0.5])).astype(np.float64)
             d["compliance_adaptive_limit_min"] = np.asarray(raw_overrides.get("compliance_adaptive_limit_min", [0.1] * 6)).astype(np.float64)
+            d["use_force_mode"] = bool(raw_overrides.get("use_force_mode", False))
         except Exception as e:
             raise ValueError(f"TaskFrameCommand seems to be missing fields: {e}")
 
@@ -130,18 +132,20 @@ class TaskFrameCommand(TaskFrame):
     
 
 class RTDETaskFrameController(mp.Process):
-    """RTDE task-frame controller with per-axis modes and 6D impedance.
+    """RTDE task-frame controller with force or direct-pose task-space output.
 
     Runs a 1 kHz loop that:
       • Reads commands from shared memory (pose/vel/force modes per axis)
       • Estimates current state in the task frame
       • Integrates virtual targets (for IMPEDANCE_VEL)
-      • Computes and bounds a wrench, then applies it via `forceMode(...)`
+      • In force mode: computes and bounds a wrench, then applies `forceMode(...)`
+      • In simple pose mode: applies direct task-space pose commands via `moveL(...)`
 
     Notes:
         - Translation bounds are enforced directly; rotation bounds are applied
           in RPY space but the controller operates internally on rot-vectors.
-        - Automatically (re)enters `forceMode` as needed.
+        - ``config.use_force_mode`` selects force mode (``True``) or simple pose mode (``False``).
+        - Per-primitive switching is supported via ``controller_overrides={"use_force_mode": ...}``.
 
     Attributes:
         config (URConfig): Runtime configuration (RTDE IP, gains, limits, etc.).
@@ -211,7 +215,8 @@ class RTDETaskFrameController(mp.Process):
                 "compliance_reference_limit_enable": np.array(self.config.compliance_reference_limit_enable, dtype=bool),
                 "compliance_desired_wrench": np.array(self.config.compliance_desired_wrench, dtype=np.float64),
                 "compliance_adaptive_limit_min": np.array(self.config.compliance_adaptive_limit_min, dtype=np.float64),
-                "rotation_interval_modes": ["linear"] * 6
+                "rotation_interval_modes": ["linear"] * 6,
+                "use_force_mode": bool(self.config.use_force_mode),
             },
         )
         self.origin = self._last_cmd.origin
@@ -222,6 +227,7 @@ class RTDETaskFrameController(mp.Process):
         self.min_pose = self._last_cmd.min_pose
         self._resolve_compliance_settings(**self._last_cmd.controller_overrides)
         self._active_space: ControlSpace | None = None
+        self._use_force_mode: bool = bool(self._last_cmd.controller_overrides.get("use_force_mode", self.config.use_force_mode))
 
     # =========== launch & shutdown =============
     def connect(self):
@@ -437,7 +443,7 @@ class RTDETaskFrameController(mp.Process):
                 perf["sec_wins"]["wrench"].add(time.monotonic() - section_start)
 
                 section_start = time.monotonic()
-                self._send_output_command(active_space, rtde_c, wrench_F, torque_cmd)
+                self._send_output_command(active_space, rtde_c, wrench_F, torque_cmd, x_cmd)
                 perf["sec_wins"]["forcemode"].add(time.monotonic() - section_start)
 
                 compute_time = time.monotonic() - t_iter0
@@ -610,7 +616,7 @@ class RTDETaskFrameController(mp.Process):
         """Compute the wrench or torque command for the active control space."""
         wrench_F = np.zeros(6, dtype=np.float64)
         torque_cmd = np.zeros(6, dtype=np.float64)
-        if active_space == ControlSpace.TASK:
+        if active_space == ControlSpace.TASK and self._use_force_mode:
             wrench_F = self._compute_task_wrench(
                 x_cmd=x_cmd,
                 pose_F=pose_F,
@@ -631,10 +637,14 @@ class RTDETaskFrameController(mp.Process):
         rtde_c,
         wrench_F: np.ndarray,
         torque_cmd: np.ndarray,
+        x_cmd: np.ndarray,
     ) -> None:
         """Send the already-computed output command through the appropriate RTDE API."""
         if active_space == ControlSpace.TASK:
-            self._send_task_wrench(rtde_c, wrench_F)
+            if self._use_force_mode:
+                self._send_task_wrench(rtde_c, wrench_F)
+            else:
+                self._send_task_pose(rtde_c, x_cmd)
         elif active_space == ControlSpace.JOINT:
             self._send_joint_torque(rtde_c, torque_cmd)
 
@@ -792,6 +802,18 @@ class RTDETaskFrameController(mp.Process):
         rtde_c.forceModeSetGainScaling(self.config.force_mode_gain_scaling)
         self._send_task_wrench(rtde_c, np.zeros(6, dtype=np.float64))
 
+    def _task_pose_to_world_pose(self, pose_task: np.ndarray) -> np.ndarray:
+        """Convert a task-frame pose (rotvec) into a world-frame pose (rotvec)."""
+        T_world_task = sixvec_to_homogeneous(self.origin)
+        T_task_pose = sixvec_to_homogeneous(pose_task)
+        T_world_pose = T_world_task @ T_task_pose
+        return np.asarray(homogeneous_to_sixvec(T_world_pose), dtype=np.float64)
+
+    def _send_task_pose(self, rtde_c, pose_task: np.ndarray) -> None:
+        """Send a task-frame pose command via moveL (no force mode)."""
+        pose_world = self._task_pose_to_world_pose(pose_task)
+        rtde_c.moveL(pose_world.tolist(), 0.05, 0.1, False)
+
     def _get_pending_commands(self) -> tuple[dict[str, np.ndarray] | None, int]:
         """Drain the shared-memory queue and return all pending command payloads."""
         try:
@@ -868,6 +890,7 @@ class RTDETaskFrameController(mp.Process):
             self.max_pose = single["max_pose"].copy()
             self.min_pose = single["min_pose"].copy()
             self._resolve_compliance_settings(**single)
+            self._use_force_mode = bool(single["use_force_mode"])
 
             pose_F = self.read_current_state(rtde_r)["ActualTCPPose"]
             q_now = np.array(rtde_r.getActualQ(), dtype=np.float64)
@@ -876,6 +899,8 @@ class RTDETaskFrameController(mp.Process):
 
             if new_space == ControlSpace.JOINT and np.any(new_control_mode != ControlMode.POS):
                 raise ValueError("UR joint-space control only supports POS axes")
+            if not self._use_force_mode and new_space == ControlSpace.TASK and np.any(new_control_mode != ControlMode.POS):
+                raise ValueError("Simple UR pose controller only supports task-space POS axes")
 
             for axis in range(6):
                 became_relative_pos = (
@@ -892,7 +917,7 @@ class RTDETaskFrameController(mp.Process):
 
             self.control_mode = new_control_mode.copy()
             self.delta_mode = new_delta_mode.copy()
-            if new_space == ControlSpace.TASK and not self.force_on:
+            if new_space == ControlSpace.TASK and self._use_force_mode and not self.force_on:
                 self._enter_task_force_mode(rtde_c)
             elif not self._use_force_mode and self.force_on:
                 rtde_c.forceModeStop()
@@ -1062,10 +1087,20 @@ class RTDETaskFrameController(mp.Process):
 
 
     def _cleanup_rtde(self, rtde_c, rtde_r) -> None:
-        """Best-effort shutdown of RTDE force mode, script, and connections."""
+        """Best-effort shutdown of RTDE control mode, script, and connections."""
         try:
-            if self.force_on:
+            if self._use_force_mode and self.force_on:
                 rtde_c.forceModeStop()
+        except Exception:
+            pass
+        try:
+            if not self._use_force_mode and hasattr(rtde_c, "servoStop"):
+                rtde_c.servoStop()
+        except Exception:
+            pass
+        try:
+            if not self._use_force_mode and hasattr(rtde_c, "stopL"):
+                rtde_c.stopL()
         except Exception:
             pass
         try:

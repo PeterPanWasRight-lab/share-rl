@@ -51,6 +51,9 @@ def _shared_processor(gripper_pos: float=0.0) -> ManipulationPrimitiveProcessorC
 
 
 
+_NO_FORCE_OVERRIDES = {"use_force_mode": False}
+
+
 def get_target_prim_cfg(target: list[float], processor: ManipulationPrimitiveProcessorConfig) -> ManipulationPrimitiveConfig:
     return ManipulationPrimitiveConfig(
         notes="Move to a known safe start pose.",
@@ -59,9 +62,7 @@ def get_target_prim_cfg(target: list[float], processor: ManipulationPrimitivePro
             target=target,
             policy_mode=[None] * 6,
             control_mode=[ControlMode.POS] * 6,
-            controller_overrides={
-                "use_force_mode": False,
-            }
+            controller_overrides=_NO_FORCE_OVERRIDES,
         ),
     )
 
@@ -77,6 +78,7 @@ def get_object_relative_grasp_prim_cfg(
             target=list(grasp_pose),
             policy_mode=[None] * 6,
             control_mode=[ControlMode.POS] * 6,
+            controller_overrides=_NO_FORCE_OVERRIDES,
         ),
         frame_origin_runtime_key="object_pose",
     )
