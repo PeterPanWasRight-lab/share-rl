@@ -51,9 +51,13 @@ class URConfig(RobotConfig):
     ft_filter_cutoff_hz: Optional[float] = None  # Hz, EMA low-pass cutoff for f/t sensor
     force_mode_gain_scaling: float = 1.0
     use_force_mode: bool = True  # Set False to use direct pose servoing instead of UR force mode.
+    simple_pose_use_servo: bool = False  # True → servoL (streaming 1 kHz), False → moveL (default)
     simple_pose_servo_time: float = 0.002  # [s] servoL control duration per command.
     simple_pose_lookahead_time: float = 0.2  # [s] range [0.03, 0.2], larger is smoother/slower.
     simple_pose_gain: float = 100.0  # range [100, 2000], lower is gentler/slower.
+    simple_pose_max_speed: list[float] = field(default_factory=lambda: [0.1, 0.1, 0.1, 0.3, 0.3, 0.3])  # [m/s, m/s, m/s, rad/s, rad/s, rad/s] — only used for servoL
+    simple_pose_move_speed: float = 0.05  # [m/s] moveL translation speed
+    simple_pose_move_accel: float = 0.1   # [m/s²] moveL acceleration
     kp: list[float] = field(default_factory=lambda: [2500.0, 2500.0, 2500.0, 150.0, 150.0, 150.0])
     kd: list[float] = field(default_factory=lambda: [80.0, 80.0, 80.0, 8.0, 8.0, 8.0])
 
@@ -84,6 +88,8 @@ class URConfig(RobotConfig):
             raise ValueError("URConfig.simple_pose_gain must be in [100, 2000].")
         if float(self.simple_pose_servo_time) <= 0.0:
             raise ValueError("URConfig.simple_pose_servo_time must be > 0.")
+        if len(self.simple_pose_max_speed) != 6 or any(v <= 0 for v in self.simple_pose_max_speed):
+            raise ValueError("URConfig.simple_pose_max_speed must be a length-6 list of positive values.")
         if len(self.kp) != 6:
             raise ValueError("URConfig.kp must be a length-6 list.")
         if len(self.kd) != 6:

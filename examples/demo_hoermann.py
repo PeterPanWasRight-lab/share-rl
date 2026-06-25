@@ -15,12 +15,15 @@ from experiments.envs.foundationpose.ur5e_foundationpose_pick import UR5eFoundat
 from share.envs.manipulation_primitive_net.env_manipulation_primitive_net import ManipulationPrimitiveNet
 
 
-
+# [[-0.88043041 -0.47381477  0.01849196 -0.55185299]
+#  [ 0.28469661 -0.4970246   0.81970382 -0.19112721]
+#  [-0.37919681  0.72695679  0.57248899  0.31400784]
+#  [ 0.          0.          0.          1.        ]]
 
 net_cfg = UR5eFoundationPosePickEnvConfig(
     robot_ip="172.22.22.2",
     fps=10,
-    object_dir="/home/jzilke/ws/share-rl-pe/hoermann_objects/power_connector",
+    object_dir="/media/internal/nvme/shared_data/hoermann/plugs/yellow_plug",
 )
 
 

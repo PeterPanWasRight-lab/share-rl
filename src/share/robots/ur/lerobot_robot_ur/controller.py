@@ -139,7 +139,7 @@ class RTDETaskFrameController(mp.Process):
       • Estimates current state in the task frame
       • Integrates virtual targets (for IMPEDANCE_VEL)
       • In force mode: computes and bounds a wrench, then applies `forceMode(...)`
-      • In simple pose mode: applies direct task-space pose commands via `moveL(...)`
+      • In simple pose mode: applies direct task-space pose commands via `moveL(...)` (default) or `servoL(...)` (set `simple_pose_use_servo=True`)
 
     Notes:
         - Translation bounds are enforced directly; rotation bounds are applied
@@ -583,7 +583,11 @@ class RTDETaskFrameController(mp.Process):
                 control_mode_i = ControlMode(self.control_mode[i])
                 delta_mode_i = DeltaMode(self.delta_mode[i])
                 if control_mode_i == ControlMode.POS and delta_mode_i == DeltaMode.ABSOLUTE:
-                    x_cmd[i] = self.target[i]
+                    if not self._use_force_mode and self.config.simple_pose_use_servo:
+                        max_step = float(self.config.simple_pose_max_speed[i]) * dt
+                        x_cmd[i] += float(np.clip(float(self.target[i]) - x_cmd[i], -max_step, max_step))
+                    else:
+                        x_cmd[i] = self.target[i]
                 elif control_mode_i == ControlMode.POS and delta_mode_i == DeltaMode.RELATIVE:
                     x_cmd[i] += float(self.target[i]) * dt
 
@@ -810,9 +814,24 @@ class RTDETaskFrameController(mp.Process):
         return np.asarray(homogeneous_to_sixvec(T_world_pose), dtype=np.float64)
 
     def _send_task_pose(self, rtde_c, pose_task: np.ndarray) -> None:
-        """Send a task-frame pose command via moveL (no force mode)."""
+        """Send a task-frame pose command via moveL or servoL (no force mode)."""
         pose_world = self._task_pose_to_world_pose(pose_task)
-        rtde_c.moveL(pose_world.tolist(), 0.05, 0.1, False)
+        if self.config.simple_pose_use_servo:
+            rtde_c.servoL(
+                pose_world.tolist(),
+                0.0,
+                0.0,
+                float(max(self.config.simple_pose_servo_time, 1.0 / self.config.frequency)),
+                float(np.clip(self.config.simple_pose_lookahead_time, 0.03, 0.2)),
+                float(np.clip(self.config.simple_pose_gain, 100.0, 2000.0)),
+            )
+        else:
+            rtde_c.moveL(
+                pose_world.tolist(),
+                float(self.config.simple_pose_move_speed),
+                float(self.config.simple_pose_move_accel),
+                False,
+            )
 
     def _get_pending_commands(self) -> tuple[dict[str, np.ndarray] | None, int]:
         """Drain the shared-memory queue and return all pending command payloads."""
@@ -1007,7 +1026,14 @@ class RTDETaskFrameController(mp.Process):
             # integrate in the same semantics exposed at the task-frame API.
             rpy_cmd = wrap_to_pi(rotvec_to_euler_xyz(out).astype(np.float64))
             if np.any(mask_abs_pos):
-                rpy_cmd[mask_abs_pos] = target_rpy[mask_abs_pos]
+                if not self._use_force_mode and self.config.simple_pose_use_servo:
+                    for j in range(3):
+                        if mask_abs_pos[j]:
+                            max_step = float(self.config.simple_pose_max_speed[3 + j]) * dt
+                            err = float(wrap_to_pi(target_rpy[j] - rpy_cmd[j]))
+                            rpy_cmd[j] += float(np.clip(err, -max_step, max_step))
+                else:
+                    rpy_cmd[mask_abs_pos] = target_rpy[mask_abs_pos]
             rpy_cmd[mask_delta_pos] = wrap_to_pi(
                 rpy_cmd[mask_delta_pos] + target_rpy[mask_delta_pos] * dt
             )
@@ -1015,7 +1041,14 @@ class RTDETaskFrameController(mp.Process):
 
         if np.any(mask_abs_pos):
             rpy_cmd = wrap_to_pi(rotvec_to_euler_xyz(out).astype(np.float64))
-            rpy_cmd[mask_abs_pos] = target_rpy[mask_abs_pos]
+            if not self._use_force_mode and self.config.simple_pose_use_servo:
+                for j in range(3):
+                    if mask_abs_pos[j]:
+                        max_step = float(self.config.simple_pose_max_speed[3 + j]) * dt
+                        err = float(wrap_to_pi(target_rpy[j] - rpy_cmd[j]))
+                        rpy_cmd[j] += float(np.clip(err, -max_step, max_step))
+            else:
+                rpy_cmd[mask_abs_pos] = target_rpy[mask_abs_pos]
             return euler_xyz_to_rotvec(rpy_cmd)
 
         return out
@@ -1094,12 +1127,12 @@ class RTDETaskFrameController(mp.Process):
         except Exception:
             pass
         try:
-            if not self._use_force_mode and hasattr(rtde_c, "servoStop"):
+            if not self._use_force_mode and self.config.simple_pose_use_servo and hasattr(rtde_c, "servoStop"):
                 rtde_c.servoStop()
         except Exception:
             pass
         try:
-            if not self._use_force_mode and hasattr(rtde_c, "stopL"):
+            if not self._use_force_mode and not self.config.simple_pose_use_servo and hasattr(rtde_c, "stopL"):
                 rtde_c.stopL()
         except Exception:
             pass

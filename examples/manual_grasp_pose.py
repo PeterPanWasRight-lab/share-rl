@@ -22,6 +22,7 @@ from share.envs.manipulation_primitive_net.env_manipulation_primitive_net import
 net_cfg = UR5eGraspPoseEnvConfig(
     robot_ip="172.22.22.2",
     fps=10,
+    object_dir="/media/local/shared_data/hoermann/plugs/yellow_plug",
 )
 
 

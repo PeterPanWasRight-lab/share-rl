@@ -11,7 +11,8 @@ class GraspObjectSpec:
     object_name: str
     mesh_path: str
     segmentation_prompt: str
-    confidence_threshold: float=0.2
+    confidence_threshold: float = 0.2
+    yolo_class_name: str | None = None
 
     def __post_init__(self) -> None:
         if not self.object_name:
@@ -31,6 +32,7 @@ class GraspObjectSpec:
             "mesh_path": self.mesh_path,
             "segmentation_prompt": self.segmentation_prompt,
             "confidence_threshold": self.confidence_threshold,
+            "yolo_class_name": self.yolo_class_name,
         }
 
     @classmethod
@@ -42,6 +44,7 @@ class GraspObjectSpec:
             mesh_path=mesh_path,
             segmentation_prompt=str(payload["segmentation_prompt"]),
             confidence_threshold=float(payload.get("confidence_threshold", 0.2)),
+            yolo_class_name=payload.get("yolo_class_name") or None,
         )
 
     def to_json_file(self, path: str | Path) -> None:

@@ -19,7 +19,7 @@ from share.envs.manipulation_primitive.env_manipulation_primitive import Manipul
 from share.envs.manipulation_primitive.task_frame import TaskFrame
 import logging
 
-from pose_estimation import GraspObjectSpec, PoseEstimator
+from pose_estimation import GraspObjectSpec, PoseEstimator, create_pose_estimator
 from share.utils.constants import DEFAULT_ROBOT_NAME
 from share.utils.transformation_utils import get_robot_pose_from_observation
 
@@ -106,19 +106,29 @@ class FoundationPosePrimitive(ManipulationPrimitive):
             pose_key: str = "pose",
     ):
         super().__init__(task_frame, robot_dict, cameras, display_cameras)
-        self.pose_estimator = PoseEstimator()
-        self._pose_estimator_initialized = False
-        self.camera_to_gripper_transform = load_camera_to_gripper_transform(
-            "/home/jzilke/ws/share-rl-pe/hand_eye_calibration_result_ur3e.json"
-        )
+
         if isinstance(grasp_object, GraspObjectSpec):
             self.object_spec = grasp_object
         else:
             self.object_spec = GraspObjectSpec.from_json_file(grasp_object)
 
+        # self.pose_estimator = PoseEstimator()
+        self.pose_estimator = create_pose_estimator(
+            segmentation_provider="yolo",
+            pose_provider="megapose",
+            mesh_path=self.object_spec.mesh_path,
+            prompt=self.object_spec.yolo_class_name,
+            confidence_threshold=self.object_spec.confidence_threshold,
+            image_format="rgb",
+        )
+        self._pose_estimator_initialized = False
+        self.camera_to_gripper_transform = load_camera_to_gripper_transform(
+            "/home/jzilke/ws/share-rl-pe/hand_eye_calibration_result_ur3e.json"
+        )
+
         self._pose_estimator_config = {
             "mesh_path": self.object_spec.mesh_path,
-            "prompt": self.object_spec.segmentation_prompt,
+            "prompt": self.object_spec.yolo_class_name,
             "confidence_threshold": self.object_spec.confidence_threshold,
             # "prompt": "black electrical box in the center", # TODO: REMOVE
             # "confidence_threshold": 0.1, # TODO: REMOVE

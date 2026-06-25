@@ -129,7 +129,8 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
             soft_real_time=True,
             rt_core=3,
             use_gripper=True,
-            use_force_mode=False
+            use_force_mode=False,
+            simple_pose_use_servo=False
         )
         self.teleop = SpaceMouseConfig(action_scale=[0.25, 0.25, 0.20, 0.50, 0.50, 0.50])
         self.cameras = {
