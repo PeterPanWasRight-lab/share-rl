@@ -115,7 +115,7 @@ class FoundationPosePrimitive(ManipulationPrimitive):
         # self.pose_estimator = PoseEstimator()
         self.pose_estimator = create_pose_estimator(
             segmentation_provider="yolo",
-            pose_provider="megapose",
+            pose_provider="foundationpose",
             mesh_path=self.object_spec.mesh_path,
             prompt=self.object_spec.yolo_class_name,
             confidence_threshold=self.object_spec.confidence_threshold,
@@ -259,19 +259,22 @@ class CachedObjectPoseInTcpFramePrimitiveConfig(ManipulationPrimitiveConfig):
 
         current_tcp_pose_world = self._current_tcp_pose_world(env, entry_context)
         object_pose = self._pose_for_robot(object_pose_world)
-        world_to_tcp = np.linalg.inv(pose_xyzrpy_to_transform(current_tcp_pose_world))
-        world_to_object = pose_xyzrpy_to_transform(object_pose)
-        world_to_gripper = pose_xyzrpy_to_transform(current_tcp_pose_world)
-        tcp_to_object = world_to_tcp @ world_to_object
-        object_to_gripper = np.linalg.inv(world_to_object) @ world_to_gripper
-        object_pose_tcp = transform_to_pose_xyzrpy(tcp_to_object)
-        gripper_pose_object = transform_to_pose_xyzrpy(object_to_gripper)
+        T_world_tcp = pose_xyzrpy_to_transform(current_tcp_pose_world)
+        T_world_object = pose_xyzrpy_to_transform(object_pose)
+        # T_tcp_object: object pose expressed in TCP frame
+        T_tcp_object = np.linalg.inv(T_world_tcp) @ T_world_object
+        # T_object_tcp: gripper/TCP pose expressed in object frame — this is the grasp pose
+        T_object_tcp = np.linalg.inv(T_world_object) @ T_world_tcp
+        object_pose_tcp = transform_to_pose_xyzrpy(T_tcp_object)
+        gripper_pose_object = transform_to_pose_xyzrpy(T_object_tcp)
 
         env.set_runtime_value(self.output_runtime_key, object_pose_tcp)
         env.set_runtime_value(self.gripper_pose_output_runtime_key, gripper_pose_object)
         env._primitive_complete = True
+        logger.info("CachedObjectPoseInTcpFramePrimitiveConfig on entry.")
         logger.info("OBJECT POSE IN TCP FRAME: %s", object_pose_tcp)
         logger.info("GRIPPER POSE IN OBJECT FRAME: %s", gripper_pose_object)
+        print()
 
     def _current_tcp_pose_world(
         self,
