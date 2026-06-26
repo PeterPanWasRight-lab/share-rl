@@ -102,6 +102,7 @@ class FoundationPosePrimitive(ManipulationPrimitive):
             robot_dict: dict[str, Robot],
             cameras: dict[str, Camera],
             grasp_object: GraspObjectSpec | str | Path,
+            calibration_file: str | Path,
             display_cameras: bool = False,
             pose_key: str = "pose",
     ):
@@ -122,9 +123,7 @@ class FoundationPosePrimitive(ManipulationPrimitive):
             image_format="rgb",
         )
         self._pose_estimator_initialized = False
-        self.camera_to_gripper_transform = load_camera_to_gripper_transform(
-            "/home/jzilke/ws/share-rl-pe/hand_eye_calibration_result_ur3e.json"
-        )
+        self.camera_to_gripper_transform = load_camera_to_gripper_transform(calibration_file)
 
         self._pose_estimator_config = {
             "mesh_path": self.object_spec.mesh_path,
@@ -212,6 +211,8 @@ class FoundationPosePrimitive(ManipulationPrimitive):
 @dataclass
 class FoundationPosePrimitiveConfig(ManipulationPrimitiveConfig):
     grasp_obj: GraspObjectSpec|str|None = None
+    calibration_file: str = ""
+
     def validate(self, robot_dict, teleop_dict):
         super().validate(robot_dict, teleop_dict)
 
@@ -231,6 +232,7 @@ class FoundationPosePrimitiveConfig(ManipulationPrimitiveConfig):
                                       cameras=cameras,
                                       display_cameras=display_cameras,
                                       grasp_object=self.grasp_obj,
+                                      calibration_file=self.calibration_file,
                                       pose_key="object_pose")
 
         env_processor = self.make_env_processor(device)
