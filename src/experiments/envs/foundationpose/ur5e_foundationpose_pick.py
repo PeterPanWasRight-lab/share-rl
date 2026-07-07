@@ -97,7 +97,7 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
     reset_primitive: str = "move_to_scan_pose"
     camera_serial_number: str = "352122271533"
     object_dir: str = ""
-
+    calibration_file: str = ""
     target_tolerance: list[float] = field(default_factory=lambda: [0.01, 0.01, 0.01, 0.10, 0.10, 0.10])
     closed_gripper_position: float = 1.0
     open_gripper_position: float = 0.0
@@ -146,6 +146,7 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
                 notes="Move the UR5e to the predefined scan pose before running FoundationPose.",
                 task_description="estimate object pose",
                 grasp_obj=grasp_obj,
+                calibration_file=self.calibration_file,
             ),
             "move_to_grasp_pose": get_object_relative_grasp_prim_cfg(grasp_pose_hanging, move_processor),
             "close_gripper": get_object_relative_grasp_prim_cfg(grasp_pose_hanging, close_gripper_processor),
@@ -157,6 +158,7 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
                 notes="Move the UR5e to the predefined scan pose before running FoundationPose.",
                 task_description="estimate object pose",
                 grasp_obj=grasp_obj,
+                calibration_file=self.calibration_file,
             ),
             "move_to_grasp_pose_2": get_object_relative_grasp_prim_cfg(grasp_pose_insert, move_processor),
             "close_gripper_2": get_object_relative_grasp_prim_cfg(grasp_pose_insert, close_gripper_processor),
@@ -197,10 +199,10 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
             ),
 
 
-            OnTargetPoseReached(
+            OnTimeLimit(
                 source="move_to_scan_pose_2",
                 target="estimate_object_pose_2",
-                tolerance=list(self.target_tolerance),
+                max_steps=int(90),
             ),
             Always(
                 source="estimate_object_pose_2",
@@ -219,12 +221,12 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
             OnTimeLimit(
                 source="move_to_plug_pose",
                 target="move_to_scan_pose_3",
-                max_steps=int(150),
+                max_steps=int(80),
             ),
             OnTimeLimit(
                 source="move_to_scan_pose_3",
                 target="move_to_scan_pose",
-                max_steps=int(300),
+                max_steps=int(150),
             ),
             OnTimeLimit(
                 source="open_gripper_2",
