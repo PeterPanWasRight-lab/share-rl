@@ -21,7 +21,8 @@ _REPO_ROOT = Path(__file__).parent.parent
 net_cfg = UR5eFoundationPosePickEnvConfig(
     robot_ip="172.22.22.2",
     fps=10,
-    object_dir="/media/internal/nvme/shared_data/hoermann/plugs/yellow_plug",
+    # object_dir="/media/internal/nvme/shared_data/hoermann/plugs/yellow_plug",
+    object_dir="/media/internal/nvme/shared_data/hoermann/plugs/power_connector_4pin",
     calibration_file=str(_REPO_ROOT / "calibration" / "hand_eye_calibration_result_ur3e.json"),
 )
 

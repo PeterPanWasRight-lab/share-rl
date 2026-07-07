@@ -199,10 +199,10 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
             ),
 
 
-            OnTargetPoseReached(
+            OnTimeLimit(
                 source="move_to_scan_pose_2",
                 target="estimate_object_pose_2",
-                tolerance=list(self.target_tolerance),
+                max_steps=int(90),
             ),
             Always(
                 source="estimate_object_pose_2",
@@ -221,12 +221,12 @@ class UR5eFoundationPosePickEnvConfig(ManipulationPrimitiveNetConfig):
             OnTimeLimit(
                 source="move_to_plug_pose",
                 target="move_to_scan_pose_3",
-                max_steps=int(150),
+                max_steps=int(80),
             ),
             OnTimeLimit(
                 source="move_to_scan_pose_3",
                 target="move_to_scan_pose",
-                max_steps=int(300),
+                max_steps=int(150),
             ),
             OnTimeLimit(
                 source="open_gripper_2",
