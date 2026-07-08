@@ -62,6 +62,8 @@ class ManipulationPrimitiveNet(gym.Env):
         self._episode_step_count = 0
         self._primitive_step_count = 0
         self._needs_full_reset = True
+        self._step_info: dict[str, Any] = {}
+        self._last_stepped_primitive: str | None = None
 
     @property
     def active_primitive(self) -> str:
@@ -161,6 +163,19 @@ class ManipulationPrimitiveNet(gym.Env):
             del self._action_processors[k]
             del self._env_processors[k]
 
+    def stop(self) -> None:
+        """Hold the pose commanded by the primitive that stepped most recently."""
+        primitive_name = self._last_stepped_primitive or self._active
+        env = self._envs.get(primitive_name)
+        if env is None:
+            return
+        env.stop()
+
+    def set_step_info(self, info: dict[str, Any] | None) -> None:
+        """Set fixed info flags to seed every outer `step(action)` call."""
+
+        self._step_info = {} if info is None else dict(info)
+
     def _step_env_and_check_transitions(self, action: torch.Tensor) -> EnvTransition:
         """Execute one primitive step and evaluate at most one transition edge.
 
@@ -177,17 +192,19 @@ class ManipulationPrimitiveNet(gym.Env):
         if active not in self._envs:
             raise KeyError(f"Unknown active primitive '{active}'.")
         primitive = self.config.primitives[active]
+        self._last_stepped_primitive = active
 
         # 1) Process action
-        info = {}
+        info = dict(self._step_info)
         if primitive.policy is None and not getattr(self._envs[active], "uses_autonomous_step", False):
             info[TeleopEvents.IS_INTERVENTION] = True
 
         action_transition = create_transition(action=action, info=info)
         processed_action_transition = self._action_processors[active](action_transition)
 
-        if processed_action_transition[TransitionKey.INFO].get(TeleopEvents.INTERVENTION_COMPLETED, False):
-            return processed_action_transition
+        # todo: find a better solution to exit on intervention end
+        #if processed_action_transition[TransitionKey.INFO].get(TeleopEvents.INTERVENTION_COMPLETED, False):
+        #    return processed_action_transition
 
         # 2) Step environment
         raw_obs, reward, terminated, truncated, info = self._envs[active].step(processed_action_transition[TransitionKey.ACTION])

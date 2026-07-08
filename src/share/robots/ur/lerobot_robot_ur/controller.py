@@ -88,8 +88,11 @@ class TaskFrameCommand(TaskFrame):
             d["policy_mode"] = np.array([int(m) if m is not None else -1 for m in self.policy_mode])
             d["delta_mode"] = np.array([int(m) if m is not None else -1 for m in self.delta_mode])
             d["target"] = np.asarray(self.target).astype(np.float64)
-            d["origin"] = np.asarray(self.origin).astype(np.float64)
-            d["origin"][3:6] = R.from_euler("xyz", d["origin"][3:6], degrees=False).as_rotvec()
+            if self.origin is None:
+                d["origin"] = np.zeros(6, dtype=np.float64)
+            else:
+                d["origin"] = np.asarray(self.origin).astype(np.float64)
+                d["origin"][3:6] = R.from_euler("xyz", d["origin"][3:6], degrees=False).as_rotvec()
             d["max_pose"] = np.asarray(raw_overrides.get("max_pose", self.max_pose)).astype(np.float64)
             d["min_pose"] = np.asarray(raw_overrides.get("min_pose", self.min_pose)).astype(np.float64)
             d["rotation_interval_modes"] = np.array(
@@ -210,6 +213,8 @@ class RTDETaskFrameController(mp.Process):
             controller_overrides={
                 "kp": np.array(self.config.kp, dtype=np.float64),
                 "kd": np.array(self.config.kd, dtype=np.float64),
+                "min_pose": np.array(self.config.min_pose_rpy, dtype=np.float64),
+                "max_pose": np.array(self.config.max_pose_rpy, dtype=np.float64),
                 "wrench_limits": np.array(self.config.wrench_limits, dtype=np.float64),
                 "compliance_adaptive_limit_enable": np.array(self.config.compliance_adaptive_limit_enable, dtype=bool),
                 "compliance_reference_limit_enable": np.array(self.config.compliance_reference_limit_enable, dtype=bool),
@@ -922,10 +927,14 @@ class RTDETaskFrameController(mp.Process):
                 raise ValueError("Simple UR pose controller only supports task-space POS axes")
 
             for axis in range(6):
+                was_relative_pos = (
+                    self.control_mode[axis] == ControlMode.POS
+                    and self.delta_mode[axis] == DeltaMode.RELATIVE
+                )
                 became_relative_pos = (
-                    new_control_mode[axis] != self.control_mode[axis]
-                    and new_control_mode[axis] == ControlMode.POS
+                    new_control_mode[axis] == ControlMode.POS
                     and new_delta_mode[axis] == DeltaMode.RELATIVE
+                    and not was_relative_pos
                 )
                 if not became_relative_pos:
                     continue
@@ -994,7 +1003,14 @@ class RTDETaskFrameController(mp.Process):
         return f_soft / kp
 
     def _integrate_virtual_target_rotation(self, rotvec_cmd: np.ndarray, dt: float) -> np.ndarray:
-        """Update rotational virtual targets in either free SO(3) or constrained XYZ RPY semantics."""
+        """Update rotational virtual targets with masked SO(3) deltas plus Euler absolutes.
+
+        Relative rotational POS axes are interpreted as an angular velocity in the
+        task-frame basis and integrated on ``SO(3)`` with the remaining axes masked
+        to zero. Absolute rotational POS axes are then imposed in the user-facing
+        XYZ Euler chart. This preserves the expected 3D delta semantics while still
+        allowing per-axis absolute locks at the task-frame API.
+        """
         out = np.asarray(rotvec_cmd, dtype=np.float64).copy()
         target_rpy = np.asarray(self.target[3:6], dtype=np.float64)
         mask_abs_pos = np.array(
@@ -1015,29 +1031,9 @@ class RTDETaskFrameController(mp.Process):
         )
 
         if np.any(mask_delta_pos):
-            if np.all(mask_delta_pos) and not np.any(mask_abs_pos):
-                # Fully relative 3-axis rotation can follow free SO(3) integration.
-                omega = np.zeros(3, dtype=np.float64)
-                omega[mask_delta_pos] = target_rpy[mask_delta_pos]
-                return (R.from_rotvec(omega * dt) * R.from_rotvec(out)).as_rotvec()
-
-            # Mixed/partial rotational targets use the controller's constrained
-            # XYZ Euler chart so absolute axes stay locked while relative axes
-            # integrate in the same semantics exposed at the task-frame API.
-            rpy_cmd = wrap_to_pi(rotvec_to_euler_xyz(out).astype(np.float64))
-            if np.any(mask_abs_pos):
-                if not self._use_force_mode and self.config.simple_pose_use_servo:
-                    for j in range(3):
-                        if mask_abs_pos[j]:
-                            max_step = float(self.config.simple_pose_max_speed[3 + j]) * dt
-                            err = float(wrap_to_pi(target_rpy[j] - rpy_cmd[j]))
-                            rpy_cmd[j] += float(np.clip(err, -max_step, max_step))
-                else:
-                    rpy_cmd[mask_abs_pos] = target_rpy[mask_abs_pos]
-            rpy_cmd[mask_delta_pos] = wrap_to_pi(
-                rpy_cmd[mask_delta_pos] + target_rpy[mask_delta_pos] * dt
-            )
-            return euler_xyz_to_rotvec(rpy_cmd)
+            omega = np.zeros(3, dtype=np.float64)
+            omega[mask_delta_pos] = target_rpy[mask_delta_pos]
+            out = (R.from_rotvec(omega * dt) * R.from_rotvec(out)).as_rotvec()
 
         if np.any(mask_abs_pos):
             rpy_cmd = wrap_to_pi(rotvec_to_euler_xyz(out).astype(np.float64))
@@ -1322,7 +1318,8 @@ class RTDETaskFrameController(mp.Process):
                     penetration = min_rpy[j] - rpy[j]
                     desired_wrench[i] += +self.kp[i] * penetration
 
-            desired_wrench[i] = np.clip(desired_wrench[i], -scaled_wrench_limits[i], scaled_wrench_limits[i])
+            # Contact limits cap the nominal command, but the boundary spring must
+            # be allowed to push harder inward after the robot has left its box.
 
     def clip_reference_errors(self, e: float, edot: float, i: int) -> tuple[float, float]:
         """

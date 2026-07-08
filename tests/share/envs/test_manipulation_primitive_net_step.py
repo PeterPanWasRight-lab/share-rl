@@ -18,6 +18,7 @@ from share.envs.manipulation_primitive_net.env_manipulation_primitive_net import
     ManipulationPrimitiveNet,
 )
 from share.envs.manipulation_primitive_net.transitions import Outcome
+from share.envs.manipulation_primitive.task_frame import ControlMode, PolicyMode, TaskFrame
 
 
 class DummyEnv:
@@ -31,6 +32,7 @@ class DummyEnv:
         self.info = {} if info is None else dict(info)
         self.last_action = None
         self.reset_calls: list[dict] = []
+        self.stop_calls = 0
 
     def step(self, action):
         self.last_action = action
@@ -42,6 +44,9 @@ class DummyEnv:
 
     def reset_runtime_state(self):
         return None
+
+    def stop(self):
+        self.stop_calls += 1
 
 
 class IdentityProcessor:
@@ -94,6 +99,13 @@ def _primitive(*, is_terminal: bool = False, policy=None):
         is_terminal=is_terminal,
         policy=policy,
         features={ACTION: SimpleNamespace(shape=(1,))},
+        task_frame={
+            "arm": TaskFrame(
+                target=[0.0] * 6,
+                control_mode=[ControlMode.POS] * 6,
+                policy_mode=[None] * 6,
+            )
+        },
         on_entry=lambda _env, _entry_context: None,
     )
 
@@ -130,6 +142,7 @@ def _make_net(
     net._episode_step_count = 0
     net._primitive_step_count = 0
     net._needs_full_reset = False
+    net._step_info = {}
     return net
 
 
@@ -275,3 +288,28 @@ def test_mp_net_reset_resets_all_processors(monkeypatch):
     assert transition[TransitionKey.INFO]["reset_seed"] == 426
     assert net._env_processors["pick"].reset_count == 1
     assert net._action_processors["pick"].reset_count == 1
+
+
+def test_mp_net_stop_targets_the_last_stepped_primitive_after_transition():
+    """Stop routing: MP-Net should stop the primitive that sent the most recent command."""
+    pick_env = DummyEnv(obs={"obs": torch.tensor([1.0])})
+    place_env = DummyEnv(obs={"obs": torch.tensor([2.0])})
+    net = _make_net(
+        envs={"pick": pick_env, "place": place_env},
+        transitions={
+            "pick": [
+                StaticTransition(
+                    source="pick",
+                    target="place",
+                    outcome=Outcome(terminated=True, reason="success"),
+                )
+            ]
+        },
+    )
+
+    net.step(torch.tensor([0.0]))
+    net.stop()
+
+    assert net._active == "place"
+    assert pick_env.stop_calls == 1
+    assert place_env.stop_calls == 0

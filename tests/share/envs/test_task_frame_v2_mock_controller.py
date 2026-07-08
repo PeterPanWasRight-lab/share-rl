@@ -1,107 +1,158 @@
+"""Focused tests for non-hardware UR controller helpers."""
+
 from __future__ import annotations
 
-import importlib.util
-import sys
 import time
-from dataclasses import dataclass, field
+import uuid
 from multiprocessing.managers import SharedMemoryManager
-from pathlib import Path
+from types import SimpleNamespace
 
-ROOT = Path(__file__).resolve().parents[3]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+import numpy as np
+import pytest
 
-MODULE_PATH = ROOT / "src/share/robots/lerobot_robot_ur/lerobot_robot_urV2/tf_controller.py"
-SPEC = importlib.util.spec_from_file_location("tf_controller_v2_test_module", MODULE_PATH)
-tf_controller = importlib.util.module_from_spec(SPEC)
-assert SPEC is not None and SPEC.loader is not None
-SPEC.loader.exec_module(tf_controller)
+from share.envs.manipulation_primitive.task_frame import ControlMode, ControlSpace, PolicyMode
+from share.robots.ur.lerobot_robot_ur.config_ur import URConfig
+from share.robots.ur.lerobot_robot_ur.controller import Command, RTDETaskFrameController, TaskFrameCommand
 
 
-@dataclass
-class _ControllerConfig:
-    robot_ip: str
-    frequency: float = 100.0
-    payload_mass: float | None = None
-    payload_cog: list[float] | None = None
-    tcp_offset_pose: list[float] | None = None
-    soft_real_time: bool = False
-    rt_core: int = 0
-    launch_timeout: float = 1.0
-    get_max_k: int = 16
-    shm_manager: SharedMemoryManager | None = None
-    ft_filter_cutoff_hz: float | None = None
-    force_mode_gain_scaling: float = 1.0
-    max_pose_rpy: list[float] = field(default_factory=lambda: [float("inf")] * 6)
-    min_pose_rpy: list[float] = field(default_factory=lambda: [-float("inf")] * 6)
-    wrench_limits: list[float] = field(default_factory=lambda: [30.0] * 6)
-    speed_limits: list[float] = field(default_factory=lambda: [1.0] * 6)
-    deadband_pos: float = 0.001
-    deadband_rot: float = 0.01
-    leak_rate_pos: float = 5.0
-    leak_rate_rot: float = 5.0
-    compliance_safety_mode: str = "adaptive_wrench_limits"
-    compliance_safety_enable: list[bool] = field(default_factory=lambda: [False] * 6)
-    compliance_desired_wrench: list[float] = field(default_factory=lambda: [5.0] * 6)
-    compliance_adaptive_limit_theta: list[float] = field(default_factory=lambda: [1.0] * 6)
-    compliance_adaptive_limit_min: list[float] = field(default_factory=lambda: [0.1] * 6)
-    use_degrees: bool = False
-    verbose: bool = False
-    mock: bool = True
-    debug: bool = False
-    debug_axis: int = 0
+def test_task_frame_command_delta_mode_treats_only_relative_axes_as_deltas():
+    """Delta mode should be derived from policy_mode only."""
+    command = TaskFrameCommand(
+        policy_mode=[
+            PolicyMode.RELATIVE,
+            PolicyMode.ABSOLUTE,
+            None,
+            PolicyMode.RELATIVE,
+            None,
+            PolicyMode.ABSOLUTE,
+        ]
+    )
+
+    assert command.delta_mode == [
+        PolicyMode.RELATIVE,
+        PolicyMode.ABSOLUTE,
+        PolicyMode.ABSOLUTE,
+        PolicyMode.RELATIVE,
+        PolicyMode.ABSOLUTE,
+        PolicyMode.ABSOLUTE,
+    ]
 
 
-def test_mock_rtde_interfaces_generate_motion_from_force_mode():
-    hostname = f"pytest-mock-rtde-{time.time_ns()}"
-    rtde_c = tf_controller.MockRTDEControlInterface(hostname, frequency=200.0)
-    rtde_r = tf_controller.MockRTDEReceiveInterface(hostname)
-
-    rtde_c.forceModeSetGainScaling(0.5)
-    for _ in range(12):
-        period = rtde_c.initPeriod()
-        rtde_c.forceMode([0.0] * 6, [1, 1, 1, 1, 1, 1], [12.0, 0.0, 0.0, 0.0, 0.0, 1.5], 2, [1.0] * 6)
-        rtde_c.waitPeriod(period)
-
-    pose = rtde_r.getActualTCPPose()
-    speed = rtde_r.getActualTCPSpeed()
-    wrench = rtde_r.getActualTCPForce()
-
-    assert pose[0] > 0.0
-    assert abs(pose[5]) > 0.0
-    assert speed[0] > 0.0
-    assert wrench[0] > 0.0
+def test_task_frame_command_rejects_unknown_controller_override_keys():
+    """Unknown override keys should fail before queueing."""
+    with pytest.raises(ValueError, match="Unsupported UR task-frame controller overrides"):
+        TaskFrameCommand(
+            control_mode=[ControlMode.POS] * 6,
+            controller_overrides={"mystery_limit": [1.0] * 6},
+        ).to_queue_dict()
 
 
-def test_controller_mock_mode_starts_quickly_and_streams_state():
-    config = _ControllerConfig(robot_ip=f"pytest-controller-{time.time_ns()}")
-    controller = tf_controller.RTDETaskFrameController(config)
+def test_controller_zero_ft_reuses_last_command_layout_with_new_opcode():
+    """`zero_ft()` should reuse the last command payload with a new opcode."""
+    queued_items: list[dict[str, np.ndarray]] = []
+    controller = object.__new__(RTDETaskFrameController)
+    controller._last_cmd = TaskFrameCommand(
+        target=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        control_mode=[ControlMode.POS] * 6,
+        policy_mode=[PolicyMode.ABSOLUTE] * 6,
+    )
+    controller.robot_cmd_queue = SimpleNamespace(put=queued_items.append)
 
-    start = time.perf_counter()
-    controller.start(wait=True)
+    controller.zero_ft()
+
+    assert len(queued_items) == 1
+    queued = queued_items[0]
+    assert queued["cmd"] == int(Command.ZERO_FT)
+    np.testing.assert_allclose(queued["target"], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+
+
+def test_apply_pending_commands_reanchors_axes_that_switch_to_relative_pos():
+    """Switching from absolute to relative POS should seed the virtual target from the live pose."""
+    controller = object.__new__(RTDETaskFrameController)
+    controller.origin = np.zeros(6, dtype=np.float64)
+    controller.target = np.zeros(6, dtype=np.float64)
+    controller.min_pose = np.full(6, -np.inf, dtype=np.float64)
+    controller.max_pose = np.full(6, np.inf, dtype=np.float64)
+    controller.control_mode = np.array([int(ControlMode.POS)] * 6, dtype=np.int64)
+    controller.delta_mode = np.array([int(PolicyMode.ABSOLUTE)] * 6, dtype=np.int64)
+    controller.force_on = True
+    controller._resolve_compliance_settings = lambda **_kwargs: None
+    controller._enter_task_force_mode = lambda _rtde_c: None
+    controller._transform_task_pose_between_frames = lambda pose, source_origin, target_origin: pose
+    controller._ensure_control_space = lambda space: ControlSpace(int(space))
+    controller.read_current_state = lambda _rtde_r: {"ActualTCPPose": np.array([0.4, -0.3, 0.2, 1.1, -0.9, 0.7])}
+
+    message = TaskFrameCommand(
+        target=[0.0] * 6,
+        origin=[0.0] * 6,
+        control_mode=[ControlMode.POS] * 6,
+        policy_mode=[
+            PolicyMode.RELATIVE,
+            PolicyMode.ABSOLUTE,
+            PolicyMode.ABSOLUTE,
+            PolicyMode.RELATIVE,
+            PolicyMode.ABSOLUTE,
+            PolicyMode.ABSOLUTE,
+        ],
+    ).to_queue_dict()
+    msgs = {key: np.expand_dims(value, axis=0) for key, value in message.items()}
+    msgs["space"] = np.asarray([int(ControlSpace.TASK)], dtype=np.int8)
+
+    keep_running, active_space, x_cmd, q_cmd = controller._apply_pending_commands(
+        msgs=msgs,
+        n_cmd=1,
+        rtde_c=SimpleNamespace(),
+        rtde_r=SimpleNamespace(getActualQ=lambda: np.zeros(6, dtype=np.float64)),
+        active_space=None,
+        x_cmd=np.array([9.0, 8.0, 7.0, -6.0, -5.0, -4.0], dtype=np.float64),
+        q_cmd=np.zeros(6, dtype=np.float64),
+    )
+
+    assert keep_running is True
+    assert active_space == ControlSpace.TASK
+    np.testing.assert_allclose(x_cmd[[0, 3]], [0.4, 1.1])
+    np.testing.assert_allclose(x_cmd[[1, 2, 4, 5]], [8.0, 7.0, -5.0, -4.0])
+    np.testing.assert_allclose(q_cmd, np.zeros(6, dtype=np.float64))
+
+
+def test_controller_can_initialize_with_mock_config():
+    """Mock mode should build shared-memory buffers from in-process RTDE state."""
+    shm_manager = SharedMemoryManager()
+    shm_manager.start()
+    controller = None
     try:
-        assert time.perf_counter() - start < 0.5
-
-        cmd = tf_controller.TaskFrameCommand(
-            origin=[0.0] * 6,
-            target=[10.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            control_mode=[tf_controller.ControlMode.WRENCH] + [tf_controller.ControlMode.VEL] * 5,
-            policy_mode=[None] * 6,
-            max_pose=[float("inf")] * 6,
-            min_pose=[-float("inf")] * 6,
+        config = URConfig(
+            robot_ip=f"mock-init-{uuid.uuid4()}",
+            mock=True,
+            frequency=50.0,
+            shm_manager=shm_manager,
         )
-        controller.send_cmd(cmd)
-
+        controller = RTDETaskFrameController(config)
         state = controller.get_robot_state()
-        deadline = time.time() + 0.5
-        while time.time() < deadline and state["ActualTCPPose"][0] <= 0.0:
-            time.sleep(0.02)
-            state = controller.get_robot_state()
-
-        assert state["ActualTCPPose"][0] > 0.0
-        assert state["SetTCPForce"][0] > 0.0
+        np.testing.assert_allclose(state["ActualTCPPose"], np.zeros(6))
+        np.testing.assert_allclose(state["ActualQ"], np.zeros(6))
     finally:
-        controller.stop(wait=True)
-        if config.shm_manager is not None:
-            config.shm_manager.shutdown()
+        if controller is not None:
+            controller.close()
+        shm_manager.shutdown()
+
+
+def test_mock_rtde_interfaces_support_force_and_joint_commands():
+    """The in-process RTDE mock should exercise task and joint controller outputs."""
+    controller = object.__new__(RTDETaskFrameController)
+    controller.config = SimpleNamespace(
+        mock=True,
+        robot_ip=f"mock-rtde-{uuid.uuid4()}",
+        frequency=100.0,
+    )
+    rtde_c, rtde_r = controller._connect_rtde_interfaces()
+
+    rtde_c.forceMode([0.0] * 6, [1] * 6, [6.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2, [5.0] * 6)
+    time.sleep(0.05)
+    assert rtde_r.getActualTCPPose()[0] > 0.0
+    assert rtde_r.getActualTCPForce()[0] > 0.0
+
+    rtde_c.directTorque([4.0, 0.0, 0.0, 0.0, 0.0, 0.0], True)
+    time.sleep(0.05)
+    assert rtde_r.getActualQ()[0] > 0.0
+    assert rtde_r.getActualQd()[0] > 0.0

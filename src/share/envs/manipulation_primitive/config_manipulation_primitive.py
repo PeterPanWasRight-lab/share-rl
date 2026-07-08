@@ -1,4 +1,5 @@
 import copy
+import time
 from dataclasses import dataclass, field, fields
 from typing import Any, Literal
 
@@ -12,7 +13,7 @@ from lerobot.datasets.pipeline_features import PREFIXES_TO_STRIP, strip_prefix, 
 from lerobot.envs import EnvConfig
 from lerobot.teleoperators import Teleoperator
 from lerobot.robots import Robot
-from lerobot.processor import DataProcessorPipeline, DeviceProcessorStep, ImageCropResizeProcessorStep
+from lerobot.processor import DataProcessorPipeline, DeviceProcessorStep
 from lerobot.processor.converters import identity_transition
 from lerobot.processor.hil_processor import GRIPPER_KEY
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
@@ -48,7 +49,7 @@ from share.processor.info import (
 from share.processor.observation import (
     JointsToEEObservation,
     RelativeFrameObservationProcessor,
-    DefaultObservationProcessor
+    StateObservationProcessor, ImageObservationProcessor,
 )
 from share.teleoperators import TeleopEvents
 from share.utils.transformation_utils import task_pose_to_world_pose, compose_delta_pose, world_pose_to_task_pose
@@ -380,7 +381,7 @@ class ManipulationPrimitiveConfig(EnvConfig, ChoiceRegistry):
             # builds OBS_STATE based on what we want to have in there
             # if obs has no joint vel and we want it, compute numerically
             # same for ee_vel
-            DefaultObservationProcessor(
+            StateObservationProcessor(
                 device=device,
                 gripper_enable=self.processor.gripper.enable,
                 add_joint_position_to_observation=self.processor.observation.add_joint_position_to_observation,
@@ -394,22 +395,26 @@ class ManipulationPrimitiveConfig(EnvConfig, ChoiceRegistry):
                 ee_wrench_axes=self.processor.observation.ee_wrench_axes,
                 stack_frames=self.processor.observation.stack_frames,
             ),
-            DeviceProcessorStep(device=device)
         ])
+
+        if self.processor.image_preprocessing:
+            env_pipeline_steps.append(
+                ImageObservationProcessor(
+                    crop_params_dict=self.processor.image_preprocessing.crop_params_dict,
+                    resize_size=self.processor.image_preprocessing.resize_size,
+                    filter_keys=self.processor.image_preprocessing.filter_keys,
+                    debug_timing=self.processor.hooks.time_env_processor,
+                    log_every=self.processor.hooks.log_every,
+                )
+            )
+
+        env_pipeline_steps.append(DeviceProcessorStep(device=device))
 
         # action relative to starting pose
         if any_enabled(self.processor.observation.relative_ee_pos):
             env_pipeline_steps.append(
                 RelativeFrameObservationProcessor(
                     enable=self.processor.observation.relative_ee_pos
-                )
-            )
-
-        if self.processor.image_preprocessing:
-            env_pipeline_steps.append(
-                ImageCropResizeProcessorStep(
-                    crop_params_dict=self.processor.image_preprocessing.crop_params_dict,
-                    resize_size=self.processor.image_preprocessing.resize_size
                 )
             )
 
@@ -622,6 +627,49 @@ class ManipulationPrimitiveConfig(EnvConfig, ChoiceRegistry):
             start_pose[name] = resolve_entry_start_pose(entry_context, name, frame)
             target_pose[name] = [float(v) for v in frame.target]
         return start_pose, target_pose
+
+
+ManipulationPrimitiveConfig.register_subclass("primitive", ManipulationPrimitiveConfig)
+
+
+@ManipulationPrimitiveConfig.register_subclass("zero_ft")
+@dataclass
+class ZeroFTPrimitiveConfig(ManipulationPrimitiveConfig):
+    """Scripted primitive that holds the entry pose, re-zeros F/T, and exits."""
+
+    settle_duration_s: float = 0.3
+
+    def validate(self, robot_dict, teleop_dict):
+        super().validate(robot_dict, teleop_dict)
+        if self.policy is not None:
+            raise ValueError("zero_ft is scripted-only and must not configure a policy.")
+        if self.settle_duration_s < 0.0:
+            raise ValueError("zero_ft settle_duration_s must be >= 0.")
+
+    def make(
+        self,
+        robot_dict,
+        teleop_dict,
+        cameras,
+        device: str = "cpu",
+    ):
+        env, env_processor, action_processor = super().make(robot_dict, teleop_dict, cameras, device)
+        env.uses_autonomous_step = True
+        return env, env_processor, action_processor
+
+    def on_entry(self, env: ManipulationPrimitive, entry_context: PrimitiveEntryContext | None) -> None:
+        start_pose, _target_pose = self.resolve_targets(entry_context)
+        env.set_target_pose(start_pose, info_key=self.target_pose_info_key)
+        env.apply_task_frames()
+
+        time.sleep(self.settle_duration_s)
+        for robot in env.robot_dict.values():
+            controller = getattr(robot, "controller", None)
+            if controller is None or not hasattr(controller, "zero_ft"):
+                raise AttributeError("zero_ft primitive requires robots with a controller.zero_ft() method")
+            controller.zero_ft()
+
+        env._primitive_complete = True
 
 
 @ManipulationPrimitiveConfig.register_subclass("move_delta")

@@ -8,7 +8,7 @@ from lerobot.utils.constants import OBS_IMAGES
 from lerobot.cameras import Camera
 from lerobot.robots import Robot
 
-from share.envs.manipulation_primitive.task_frame import TaskFrame
+from share.envs.manipulation_primitive.task_frame import ControlMode, ControlSpace, PolicyMode, TASK_FRAME_AXIS_NAMES, TaskFrame
 from share.envs.utils import check_task_frame_robot
 from share.teleoperators import TeleopEvents
 
@@ -113,6 +113,47 @@ class ManipulationPrimitive(gymnasium.Env):
         for robot_dict in self.robot_dict.values():
             if robot_dict.is_connected:
                 robot_dict.disconnect()
+
+    def stop(self) -> None:
+        """Hold the current robot pose by sending zero position delta on all axes."""
+        for name, robot in self.robot_dict.items():
+            if not getattr(robot, "is_connected", False):
+                continue
+
+            frame = self.task_frame.get(name)
+            observation = robot.get_observation()
+            action: dict[str, float] = {}
+
+            if frame is not None and frame.space == ControlSpace.TASK and self._is_task_frame_robot.get(name, False):
+                n = len(frame.target)
+                stop_frame = TaskFrame(
+                    origin=frame.origin,
+                    space=frame.space,
+                    target=[0.0] * n,
+                    control_mode=[ControlMode.POS] * n,
+                    policy_mode=[PolicyMode.RELATIVE] * n,
+                )
+                robot.set_task_frame(stop_frame)
+                for axis_name in TASK_FRAME_AXIS_NAMES:
+                    action[f"{axis_name}.ee_pos"] = 0.0
+            else:
+                joint_names = list(frame.joint_names) if frame is not None and frame.joint_names is not None else [
+                    key.removesuffix(".pos")
+                    for key in observation
+                    if key.endswith(".pos") and ".ee_" not in key and key != "gripper.pos"
+                ]
+                for axis, joint_name in enumerate(joint_names):
+                    key = f"{joint_name}.pos"
+                    if key not in observation:
+                        continue
+                    value = float(observation[key])
+                    action[key] = value
+                    if frame is not None and axis < len(frame.target):
+                        frame.target[axis] = value
+                        frame.control_mode[axis] = ControlMode.POS
+
+            if action:
+                robot.send_action(action)
 
     def apply_task_frames(self) -> None:
         """Re-send the current task frame to every robot that supports it."""
@@ -224,10 +265,6 @@ class OpenLoopTrajectoryPrimitive(ManipulationPrimitive):
             cameras=cameras,
             display_cameras=display_cameras,
         )
-
-    @property
-    def uses_autonomous_step(self) -> bool:
-        return True
 
     def reset_runtime_state(self) -> None:
         super().reset_runtime_state()
