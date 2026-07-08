@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import time
+import uuid
+from multiprocessing.managers import SharedMemoryManager
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from share.envs.manipulation_primitive.task_frame import ControlMode, ControlSpace, PolicyMode
+from share.robots.ur.lerobot_robot_ur.config_ur import URConfig
 from share.robots.ur.lerobot_robot_ur.controller import Command, RTDETaskFrameController, TaskFrameCommand
 
 
@@ -109,3 +113,46 @@ def test_apply_pending_commands_reanchors_axes_that_switch_to_relative_pos():
     np.testing.assert_allclose(x_cmd[[0, 3]], [0.4, 1.1])
     np.testing.assert_allclose(x_cmd[[1, 2, 4, 5]], [8.0, 7.0, -5.0, -4.0])
     np.testing.assert_allclose(q_cmd, np.zeros(6, dtype=np.float64))
+
+
+def test_controller_can_initialize_with_mock_config():
+    """Mock mode should build shared-memory buffers from in-process RTDE state."""
+    shm_manager = SharedMemoryManager()
+    shm_manager.start()
+    controller = None
+    try:
+        config = URConfig(
+            robot_ip=f"mock-init-{uuid.uuid4()}",
+            mock=True,
+            frequency=50.0,
+            shm_manager=shm_manager,
+        )
+        controller = RTDETaskFrameController(config)
+        state = controller.get_robot_state()
+        np.testing.assert_allclose(state["ActualTCPPose"], np.zeros(6))
+        np.testing.assert_allclose(state["ActualQ"], np.zeros(6))
+    finally:
+        if controller is not None:
+            controller.close()
+        shm_manager.shutdown()
+
+
+def test_mock_rtde_interfaces_support_force_and_joint_commands():
+    """The in-process RTDE mock should exercise task and joint controller outputs."""
+    controller = object.__new__(RTDETaskFrameController)
+    controller.config = SimpleNamespace(
+        mock=True,
+        robot_ip=f"mock-rtde-{uuid.uuid4()}",
+        frequency=100.0,
+    )
+    rtde_c, rtde_r = controller._connect_rtde_interfaces()
+
+    rtde_c.forceMode([0.0] * 6, [1] * 6, [6.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2, [5.0] * 6)
+    time.sleep(0.05)
+    assert rtde_r.getActualTCPPose()[0] > 0.0
+    assert rtde_r.getActualTCPForce()[0] > 0.0
+
+    rtde_c.directTorque([4.0, 0.0, 0.0, 0.0, 0.0, 0.0], True)
+    time.sleep(0.05)
+    assert rtde_r.getActualQ()[0] > 0.0
+    assert rtde_r.getActualQd()[0] > 0.0

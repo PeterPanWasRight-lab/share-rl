@@ -27,7 +27,7 @@ from lerobot.motors import MotorCalibration
 from lerobot.processor.hil_processor import GRIPPER_KEY
 from lerobot.robots import Robot
 from lerobot.utils.errors import DeviceNotConnectedError, DeviceAlreadyConnectedError
-from share.envs.manipulation_primitive.task_frame import ControlMode, ControlSpace, TASK_FRAME_AXIS_NAMES, TaskFrame
+from share.envs.manipulation_primitive.task_frame import ControlMode, ControlSpace, PolicyMode, TASK_FRAME_AXIS_NAMES, TaskFrame
 from share.robots.ur.lerobot_robot_ur.config_ur import URConfig
 from share.robots.ur.lerobot_robot_ur.controller import (
     TaskFrameCommand,
@@ -284,9 +284,11 @@ class UR(Robot):
                 elif f"{ax}.ee_vel" in action:
                     self.task_frame.target[i] = action[f"{ax}.ee_vel"]
                     self.task_frame.control_mode[i] = ControlMode.VEL
+                    self.task_frame.policy_mode[i] = PolicyMode.ABSOLUTE
                 elif f"{ax}.ee_wrench" in action:
                     self.task_frame.target[i] = action[f"{ax}.ee_wrench"]
                     self.task_frame.control_mode[i] = ControlMode.WRENCH
+                    self.task_frame.policy_mode[i] = PolicyMode.ABSOLUTE
 
         if self.gripper is not None and f"{GRIPPER_KEY}.pos" in action:
             self.send_gripper_action(action[f"{GRIPPER_KEY}.pos"])
@@ -385,6 +387,3 @@ class UR(Robot):
         if gripper_calibration is None:
             return None
         return int(gripper_calibration.range_min), int(gripper_calibration.range_max)
-
-
-URV2 = UR

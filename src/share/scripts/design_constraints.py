@@ -452,7 +452,7 @@ class WorkspaceConstraintDesigner:
 
     def save(self) -> None:
         self._apply_recorded_bounds_to_config()
-        save_mpnet_config(self.mp_net.config, self.output_path)
+        #save_mpnet_config(self.mp_net.config, self.output_path)
         logging.info("Saved calibrated MP-Net config to %s", self.output_path)
 
     def log_status(self, primitive_name: str | None = None) -> None:
@@ -505,7 +505,8 @@ def calibration_loop(
             return transition.get(TransitionKey.INFO, {})
 
         if hotkeys.consume("save"):
-            designer.save()
+            ##designer.save()
+            pass
 
         if hotkeys.consume("print_status"):
             designer.log_status()
@@ -530,7 +531,8 @@ def calibration_loop(
         if primitive_changed:
             designer.log_status(previous_primitive)
             if autosave_on_primitive_change:
-                designer.save()
+                ##designer.save()
+                pass
 
             transition = mp_net.reset()
             logging.info("Entered primitive '%s'.", mp_net.active_primitive)
@@ -538,7 +540,8 @@ def calibration_loop(
         elif getattr(mp_net, "_needs_full_reset", False):
             designer.log_status(previous_primitive)
             if autosave_on_primitive_change:
-                designer.save()
+                ##designer.save()
+                pass
 
             transition = mp_net.reset()
             logging.info("Restarted episode at primitive '%s'.", mp_net.active_primitive)

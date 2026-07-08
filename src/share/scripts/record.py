@@ -252,6 +252,9 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         mp_net.close()
 
 
-if __name__ == "__main__":
+def main():
     import experiments
     record()
+
+if __name__ == "__main__":
+    main()

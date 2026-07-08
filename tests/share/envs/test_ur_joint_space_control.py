@@ -185,6 +185,22 @@ def test_task_frame_command_converts_origin_rpy_to_internal_rotvec():
     np.testing.assert_allclose(queued["origin"][3:6], expected_rotvec)
 
 
+def test_task_frame_command_joint_space_queue_dict_uses_zero_origin():
+    controller_module = _load_controller_module()
+    command = controller_module.TaskFrameCommand(
+        space=ControlSpace.JOINT,
+        origin=None,
+        target=[0.0] * 6,
+        control_mode=[ControlMode.POS] * 6,
+        policy_mode=[PolicyMode.ABSOLUTE] * 6,
+    )
+
+    queued = command.to_queue_dict()
+
+    assert queued["space"] == int(ControlSpace.JOINT)
+    np.testing.assert_allclose(queued["origin"], np.zeros(6))
+
+
 def test_controller_rejects_task_to_joint_switches():
     controller_module = _load_controller_module()
     controller = object.__new__(controller_module.RTDETaskFrameController)

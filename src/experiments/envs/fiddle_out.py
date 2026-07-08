@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+import numpy as np
 from lerobot.cameras.realsense import RealSenseCameraConfig
 from lerobot.envs import EnvConfig
 from pynput import keyboard
@@ -44,7 +45,11 @@ def _shared_processor() -> ManipulationPrimitiveProcessorConfig:
             add_ee_pos_to_observation=False,
             add_joint_position_to_observation=False,
         ),
-        gripper=GripperConfig(enable=False),
+        gripper=GripperConfig(
+            enable=True,
+            discretize=True,
+            min_pos=0.5
+        ),
         events=EventConfig(
             key_mapping={
                 TeleopEvents.RERECORD_EPISODE: keyboard.Key.left,
@@ -127,14 +132,14 @@ class DemoUR3eTeleopFiddleOutEnvConfig(ManipulationPrimitiveNetConfig):
     """Teleop in 6-DoF until success, then execute a small EE-frame fiddle-out."""
 
     fps: int = 30
-    start_primitive: str = "teleop"
-    reset_primitive: str = "teleop"
+    start_primitive: str = "reset"
+    reset_primitive: str = "reset"
 
     fiddle_out_height_m: float = 0.02
     fiddle_out_radius_m: float = 0.002
     fiddle_out_circle_frequency_hz: float = 10.0
     fiddle_out_duration_s: float = 1.0
-    teleop_wrench_limits: list[float] = field(default_factory=lambda: [25.0, 25.0, 25.0, 1.0, 1.0, 1.0])
+    teleop_wrench_limits: list[float] = field(default_factory=lambda: [25.0, 25.0, 25.0, 5.0, 5.0, 5.0])
     fiddle_out_wrench_limits: list[float] = field(default_factory=lambda: [6.0, 6.0, 6.0, 0.4, 0.4, 0.4])
 
     def __post_init__(self):
@@ -143,16 +148,20 @@ class DemoUR3eTeleopFiddleOutEnvConfig(ManipulationPrimitiveNetConfig):
 
         self.robot = URConfig(
             robot_ip="172.22.22.2",
+            frequency=125,
             kp=[3000, 3000, 3000, 200, 200, 200],
+            kd=[50, 50, 300, 5, 5, 5],
             soft_real_time=True,
             rt_core=3,
+            use_gripper=True,
             wrench_limits=list(self.teleop_wrench_limits),
             compliance_reference_limit_enable=[True] * 6,
+            verbose=True
         )
         self.teleop = SpaceMouseConfig()
-        self.teleop.action_scale = [0.05, 0.05, 0.2, 0.1, 0.1, 0.1]
+        self.teleop.action_scale = [0.1, 0.1, 0.1, 1.0, 1.0, 1.0]
         #self.cameras = {
-        #    "wrist": RealSenseCameraConfig(serial_number_or_name="323743071487")
+        #    "wrist": RealSenseCameraConfig(serial_number_or_name="352122271533")
         #}
 
         teleop_primitive = ManipulationPrimitiveConfig(
@@ -162,6 +171,7 @@ class DemoUR3eTeleopFiddleOutEnvConfig(ManipulationPrimitiveNetConfig):
                 control_mode=[ControlMode.POS] * 6,
                 policy_mode=[PolicyMode.RELATIVE] * 6,
                 controller_overrides={"wrench_limits": list(self.teleop_wrench_limits)},
+                origin=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
             ),
             processor=processor,
             notes="6-DoF relative task-space teleop primitive.",
@@ -190,11 +200,13 @@ class DemoUR3eTeleopFiddleOutEnvConfig(ManipulationPrimitiveNetConfig):
         )
 
         self.primitives = {
+            "reset": teleop_primitive,
             "teleop": teleop_primitive,
             "fiddle_out": fiddle_out_primitive,
         }
         self.transitions = [
-            OnSuccess(source="teleop", target="fiddle_out"),
+            OnSuccess(source="reset", target="teleop"),
+            OnSuccess(source="teleop", target="reset"),
             OnTargetPoseReached(source="fiddle_out", target="teleop", axes=["z"]),
         ]
 

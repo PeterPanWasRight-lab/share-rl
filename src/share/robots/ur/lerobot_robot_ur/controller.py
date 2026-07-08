@@ -87,8 +87,11 @@ class TaskFrameCommand(TaskFrame):
             d["policy_mode"] = np.array([int(m) if m is not None else -1 for m in self.policy_mode])
             d["delta_mode"] = np.array([int(m) if m is not None else -1 for m in self.delta_mode])
             d["target"] = np.asarray(self.target).astype(np.float64)
-            d["origin"] = np.asarray(self.origin).astype(np.float64)
-            d["origin"][3:6] = R.from_euler("xyz", d["origin"][3:6], degrees=False).as_rotvec()
+            if self.origin is None:
+                d["origin"] = np.zeros(6, dtype=np.float64)
+            else:
+                d["origin"] = np.asarray(self.origin).astype(np.float64)
+                d["origin"][3:6] = R.from_euler("xyz", d["origin"][3:6], degrees=False).as_rotvec()
             d["max_pose"] = np.asarray(raw_overrides.get("max_pose", self.max_pose)).astype(np.float64)
             d["min_pose"] = np.asarray(raw_overrides.get("min_pose", self.min_pose)).astype(np.float64)
             d["rotation_interval_modes"] = np.array(
@@ -182,7 +185,7 @@ class RTDETaskFrameController(mp.Process):
 
         # 2) Build the ring buffer for streaming back pose/vel/force
         if self.config.mock:
-            raise ValueError("UR does not support mocks")
+            from share.utils.mock_utils import MockRTDEReceiveInterface as RTDEReceiveInterface
         else:
             from rtde_receive import RTDEReceiveInterface
         rtde_r = RTDEReceiveInterface(hostname=config.robot_ip)
@@ -477,10 +480,13 @@ class RTDETaskFrameController(mp.Process):
     def _connect_rtde_interfaces(self):
         """Create RTDE control/receive interfaces for the configured UR robot."""
         if self.config.mock:
-            raise ValueError("UR does not support mocks")
-
-        from rtde_control import RTDEControlInterface
-        from rtde_receive import RTDEReceiveInterface
+            from share.utils.mock_utils import (
+                MockRTDEControlInterface as RTDEControlInterface,
+                MockRTDEReceiveInterface as RTDEReceiveInterface,
+            )
+        else:
+            from rtde_control import RTDEControlInterface
+            from rtde_receive import RTDEReceiveInterface
 
         frequency = self.config.frequency
         return (

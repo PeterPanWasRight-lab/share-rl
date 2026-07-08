@@ -74,11 +74,12 @@ all = [
 ]
 
 [project.scripts]
-share-record = "share.scripts.record:record"
+share-record = "share.scripts.record:main"
 share-design-constraints = "share.scripts.design_constraints:design_constraints"
 share-train = "share.scripts.train:main"
 share-eval = "share.scripts.eval_on_dataset:main"
 share-workspace = "share.scripts.robot_workspace:main"
+share-visualize = "share.scripts.visualize:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

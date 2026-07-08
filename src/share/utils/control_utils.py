@@ -32,7 +32,7 @@ def make_policies_and_datasets(cfg: RecordConfig):
             # 1) dataset
             rename_map = {}
             stats = None
-            if cfg.dataset is not None:
+            if cfg.dataset is not None and p.policy is not None:
                 root = Path(cfg.dataset.root) / name
                 repo_id = f"{cfg.dataset.repo_id}-{name}"
 

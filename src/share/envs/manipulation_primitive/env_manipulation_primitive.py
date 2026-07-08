@@ -8,7 +8,7 @@ from lerobot.utils.constants import OBS_IMAGES
 from lerobot.cameras import Camera
 from lerobot.robots import Robot
 
-from share.envs.manipulation_primitive.task_frame import ControlMode, ControlSpace, TASK_FRAME_AXIS_NAMES, TaskFrame
+from share.envs.manipulation_primitive.task_frame import ControlMode, ControlSpace, PolicyMode, TASK_FRAME_AXIS_NAMES, TaskFrame
 from share.envs.utils import check_task_frame_robot
 from share.teleoperators import TeleopEvents
 
@@ -114,7 +114,7 @@ class ManipulationPrimitive(gymnasium.Env):
                 robot_dict.disconnect()
 
     def stop(self) -> None:
-        """Hold the current robot pose with a position command."""
+        """Hold the current robot pose by sending zero position delta on all axes."""
         for name, robot in self.robot_dict.items():
             if not getattr(robot, "is_connected", False):
                 continue
@@ -124,14 +124,17 @@ class ManipulationPrimitive(gymnasium.Env):
             action: dict[str, float] = {}
 
             if frame is not None and frame.space == ControlSpace.TASK and self._is_task_frame_robot.get(name, False):
-                for axis, axis_name in enumerate(TASK_FRAME_AXIS_NAMES):
-                    key = f"{axis_name}.ee_pos"
-                    if key not in observation:
-                        continue
-                    value = float(observation[key])
-                    action[key] = value
-                    frame.target[axis] = value
-                    frame.control_mode[axis] = ControlMode.POS
+                n = len(frame.target)
+                stop_frame = TaskFrame(
+                    origin=frame.origin,
+                    space=frame.space,
+                    target=[0.0] * n,
+                    control_mode=[ControlMode.POS] * n,
+                    policy_mode=[PolicyMode.RELATIVE] * n,
+                )
+                robot.set_task_frame(stop_frame)
+                for axis_name in TASK_FRAME_AXIS_NAMES:
+                    action[f"{axis_name}.ee_pos"] = 0.0
             else:
                 joint_names = list(frame.joint_names) if frame is not None and frame.joint_names is not None else [
                     key.removesuffix(".pos")
