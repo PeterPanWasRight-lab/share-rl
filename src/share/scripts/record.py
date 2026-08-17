@@ -30,7 +30,6 @@ from share.teleoperators import TeleopEvents, has_event, is_intervention
 from share.utils.control_utils import make_policies_and_datasets, predict_action
 from share.utils.device import get_safe_torch_device
 from share.utils.env_config_snapshot import save_env_config_snapshot
-from share.utils.exploration import OUActionNoise, resolve_action_scale
 from share.utils.video_utils import MultiVideoEncodingManager
 
 init_logging()
@@ -75,16 +74,13 @@ def record_loop(
     display_compressed_images: bool = False,
     save_only_interventions: bool = False,
     force_intervention: bool = False,
-    debugger: MPNetDebugger | None = None,
-    ou_noises: dict[str, OUActionNoise] | None = None,
+    debugger: MPNetDebugger | None = None
 ):
     # reset
     transition = mp_net.reset()
     policy = policies.get(mp_net.active_primitive, None)
     if policy is not None:
         policies[mp_net.active_primitive].reset()
-    if ou_noises is not None and mp_net.active_primitive in ou_noises:
-        ou_noises[mp_net.active_primitive].reset()
     if debugger is not None:
         debugger.log_reset(mp_net, transition)
 
@@ -119,9 +115,6 @@ def record_loop(
                 task=task,
                 robot_type=mp_net.config.type
             ).squeeze()
-            noise_gen = ou_noises.get(mp_net.active_primitive) if ou_noises is not None else None
-            if noise_gen is not None and noise_gen.enabled:
-                action = action + noise_gen.sample_torch(dt=1.0 / mp_net.config.fps, like=action)
         else:
             # Dummy action, expected to be overwritten by teleop action
             action = torch.tensor([0.0] * mp_net.action_dim, dtype=torch.float32)
@@ -228,28 +221,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     debugger = None
     datasets, policies, preprocessors, postprocessors = make_policies_and_datasets(cfg)
 
-    ou_noises = {}
-    if cfg.exploration_noise_scale > 0:
-        for name, policy in policies.items():
-            if policy is None:
-                continue
-            scale = resolve_action_scale(postprocessors[name], ACTION)
-            if scale is None:
-                logging.warning(
-                    f"[{name}] exploration_noise_scale is set but the policy's postprocessor has no "
-                    f"'{ACTION}' statistics; falling back to unit noise scale (likely wrong units)."
-                )
-            ou_noises[name] = OUActionNoise(
-                action_scale=scale,
-                noise_scale=cfg.exploration_noise_scale,
-                correlation_time_s=cfg.exploration_noise_correlation_s,
-            )
-            logging.info(
-                f"[{name}] exploration noise enabled: scale={cfg.exploration_noise_scale} "
-                f"correlation={cfg.exploration_noise_correlation_s}s "
-                f"action_scale={'auto' if scale is not None else 'unit-fallback'}"
-            )
-
     try:
         with MultiVideoEncodingManager(datasets):
             while True:
@@ -269,7 +240,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                     save_only_interventions=cfg.save_only_interventions,
                     force_intervention=force_intervention,
                     debugger=debugger,
-                    ou_noises=ou_noises,
                 )
 
                 if has_event(info, TeleopEvents.STOP_RECORDING):
