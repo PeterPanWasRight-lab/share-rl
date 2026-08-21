@@ -32,9 +32,11 @@ def build_ur5e_2f85_model():
     gripper_frame.attach_body(gripper.body("base_mount"), prefix="gripper_")
 
     gripper_base = ur5e.body("gripper_base")
+    gripper_pinch = ur5e.site("gripper_pinch")
     tool_tcp = gripper_base.add_site()
     tool_tcp.name = "tool_tcp"
-    tool_tcp.pos = [0.0, 0.0, 0.255]
+    tool_tcp.pos = gripper_pinch.pos
+    tool_tcp.quat = gripper_pinch.quat
     tool_tcp.size = [0.003, 0.0, 0.0]
 
     wrist_camera = gripper_base.add_camera()

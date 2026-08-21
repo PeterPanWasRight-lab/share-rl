@@ -50,6 +50,10 @@ def test_default_model_uses_vendored_menagerie_and_act_assets():
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "object_peg_joint") >= 0
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "tool_tcp") >= 0
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist") >= 0
+    assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "socket-pin") == -1
+    tool_tcp_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "tool_tcp")
+    pinch_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "gripper_pinch")
+    np.testing.assert_allclose(model.site_pos[tool_tcp_id], model.site_pos[pinch_id])
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "gripper_fingers_actuator") >= 0
     arm_actuator_ids = np.array(
         [
@@ -154,6 +158,57 @@ def test_mujoco_rotation_observation_matches_ur_rotvec_contract():
 
         np.testing.assert_allclose(parsed_pose[:3], internal_pose[:3], atol=1e-8)
         assert rotation_error < 1e-8
+    finally:
+        robot.disconnect()
+
+
+def test_empty_gripper_can_reach_workbench_with_pinch_tcp():
+    robot = MujocoRobot(
+        MujocoRobotConfig(
+            id="test-empty-gripper-workbench",
+            control_dt=1.0 / 30.0,
+            randomize_fixture_xy=0.0,
+        )
+    )
+    robot.connect()
+    try:
+        robot.set_task_frame(
+            TaskFrame(
+                target=[0.0] * 6,
+                policy_mode=[PolicyMode.RELATIVE] * 6,
+                control_mode=[ControlMode.POS] * 6,
+                min_pose=[-2.0, -2.0, 0.05, -3.14, -3.14, -3.14],
+                max_pose=[2.0, 2.0, 2.0, 3.14, 3.14, 3.14],
+            )
+        )
+        for _ in range(50):
+            robot.send_action({"gripper.pos": 0.0})
+        for _ in range(20):
+            robot.send_action({"x.ee_pos": 0.3, "gripper.pos": 0.0})
+        for _ in range(35):
+            robot.send_action({"z.ee_pos": -0.3, "gripper.pos": 0.0})
+        for _ in range(20):
+            robot.send_action({"gripper.pos": 0.0})
+
+        contact_pairs = set()
+        for index in range(robot._data.ncon):
+            contact = robot._data.contact[index]
+            names = {
+                mujoco.mj_id2name(
+                    robot._model, mujoco.mjtObj.mjOBJ_GEOM, contact.geom1
+                ),
+                mujoco.mj_id2name(
+                    robot._model, mujoco.mjtObj.mjOBJ_GEOM, contact.geom2
+                ),
+            }
+            contact_pairs.add(frozenset(names))
+
+        assert robot._tcp_world_pose()[2] == pytest.approx(0.05, abs=0.005)
+        assert any(
+            "workbench" in pair
+            and ("gripper_left_pad1" in pair or "gripper_right_pad1" in pair)
+            for pair in contact_pairs
+        )
     finally:
         robot.disconnect()
 
@@ -355,3 +410,102 @@ def test_mujoco_sac_action_stats_match_keyboard_physical_units():
 
     assert action_stats["min"] == [-0.1, -0.1, -0.1, -0.5, -0.5, -0.5, 0.0]
     assert action_stats["max"] == [0.1, 0.1, 0.1, 0.5, 0.5, 0.5, 1.0]
+
+
+def test_mujoco_success_rewards_and_requests_next_episode_reset():
+    net = ManipulationPrimitiveNet(
+        MujocoInsertionEnvConfig(viewer=False, episode_steps=900)
+    )
+    net.reset(seed=0)
+    try:
+        robot = next(iter(net.robot_dict.values()))
+        assert net.config.episode_steps == 900
+        for _ in range(100):
+            action = torch.zeros(net.action_dim)
+            action[2] = -0.1
+            action[-1] = 1.0
+            transition = net.step(action)
+            if transition[TransitionKey.DONE]:
+                break
+
+        assert transition[TransitionKey.DONE]
+        assert not transition[TransitionKey.TRUNCATED]
+        assert transition[TransitionKey.REWARD] == pytest.approx(1.0)
+        assert transition[TransitionKey.INFO]["transition_reason"] == "peg_inserted"
+        observation = robot.get_observation()
+        assert observation["insertion.depth"] >= net.config.success_insertion_depth
+        assert (
+            observation["insertion.lateral_error"]
+            <= net.config.success_lateral_tolerance
+        )
+
+        net.request_full_reset()
+        net.reset(seed=1)
+        assert net.active_primitive == "insert"
+    finally:
+        net.close()
+
+
+def test_mujoco_misaligned_peg_does_not_succeed_at_lower_limit():
+    net = ManipulationPrimitiveNet(
+        MujocoInsertionEnvConfig(viewer=False, episode_steps=900)
+    )
+    net.reset(seed=0)
+    try:
+        robot = next(iter(net.robot_dict.values()))
+        for _ in range(12):
+            action = torch.zeros(net.action_dim)
+            action[0] = 0.1
+            action[-1] = 1.0
+            transition = net.step(action)
+        for _ in range(95):
+            action = torch.zeros(net.action_dim)
+            action[2] = -0.1
+            action[-1] = 1.0
+            transition = net.step(action)
+
+        observation = robot.get_observation()
+        assert net.config.primitives["insert"].task_frame["main"].min_pose[2] == pytest.approx(0.05)
+        assert robot._virtual_target_task[2] == pytest.approx(0.05)
+        assert observation["insertion.depth"] > 0.01
+        assert (
+            observation["insertion.lateral_error"]
+            > net.config.success_lateral_tolerance
+        )
+        assert not transition[TransitionKey.DONE]
+        assert transition[TransitionKey.INFO]["transition_reason"] is None
+    finally:
+        net.close()
+
+
+def test_mujoco_full_reset_clears_stale_open_gripper_command():
+    net = ManipulationPrimitiveNet(
+        MujocoInsertionEnvConfig(
+            viewer=False,
+            teleop_mode="keyboard",
+            episode_steps=900,
+        )
+    )
+    net.set_step_info({TeleopEvents.IS_INTERVENTION: True})
+    net.reset(seed=0)
+    try:
+        robot = next(iter(net.robot_dict.values()))
+        teleop = next(iter(net.teleop_dict.values()))
+
+        teleop.set_gripper_position(0.0)
+        for _ in range(20):
+            net.step(torch.zeros(net.action_dim))
+        assert robot.get_observation()["gripper.pos"] < 0.1
+
+        net.request_full_reset()
+        net.reset(seed=1)
+        assert teleop.get_action()["gripper.pos"] == pytest.approx(1.0)
+
+        peg_z_before = float(robot._data.xpos[robot._peg_body_id, 2])
+        for _ in range(5):
+            net.step(torch.zeros(net.action_dim))
+        peg_z_after = float(robot._data.xpos[robot._peg_body_id, 2])
+        assert robot.get_observation()["gripper.pos"] > 0.7
+        assert peg_z_after == pytest.approx(peg_z_before, abs=0.01)
+    finally:
+        net.close()

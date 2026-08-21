@@ -67,6 +67,10 @@ class MujocoDeltaTeleop(Teleoperator, HasTeleopEvents):
         """Set the scripted teleoperation target used by simulation demos."""
         self._gripper_position = max(0.0, min(1.0, float(position)))
 
+    def reset_episode(self) -> None:
+        """Restore the closed-gripper target used at simulation reset."""
+        self._gripper_position = 1.0
+
     def get_teleop_events(self) -> dict[str, Any]:
         return {TeleopEvents.IS_INTERVENTION: False}
 

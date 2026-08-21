@@ -172,6 +172,10 @@ class ManipulationPrimitiveNet(gym.Env):
             return
         env.stop()
 
+    def request_full_reset(self) -> None:
+        """Make the next ``reset()`` start a new MP-Net episode."""
+        self._needs_full_reset = True
+
     def set_step_info(self, info: dict[str, Any] | None) -> None:
         """Set fixed info flags to seed every outer `step(action)` call."""
 
@@ -343,6 +347,10 @@ class ManipulationPrimitiveNet(gym.Env):
             if callable(reset_simulation):
                 robot_seed = None if seed is None else seed + robot_index
                 reset_simulation(seed=robot_seed)
+        for teleop in getattr(self, "teleop_dict", {}).values():
+            reset_episode = getattr(teleop, "reset_episode", None)
+            if callable(reset_episode):
+                reset_episode()
         for name, primitive in self.config.primitives.items():
             if name == self._active:
                 continue

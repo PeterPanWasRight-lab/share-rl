@@ -177,6 +177,15 @@ def record_loop(
             truncated or
             has_event(info, TeleopEvents.RERECORD_EPISODE)
         ):
+            logging.info(
+                "Episode ended: reason=%s reward=%.3f done=%s truncated=%s steps=%s",
+                info.get("transition_reason"),
+                sum_reward,
+                bool(done),
+                bool(truncated),
+                info.get("episode_step"),
+            )
+            mp_net.request_full_reset()
             mp_net.stop()
             return info
 

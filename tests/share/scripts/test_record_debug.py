@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -38,6 +39,7 @@ class _FakeMPNet:
         self.action_dim = 1
         self.active_primitive = "pick"
         self.stop_calls = 0
+        self.full_reset_requests = 0
         self.config = SimpleNamespace(
             fps=1000,
             type="mock_robot",
@@ -64,12 +66,15 @@ class _FakeMPNet:
                 "episode_step": 1,
                 "transition_from": "pick",
                 "transition_to": "pick",
-                "transition_reason": None,
+                "transition_reason": "peg_inserted",
             },
         )
 
     def stop(self):
         self.stop_calls += 1
+
+    def request_full_reset(self):
+        self.full_reset_requests += 1
 
 
 class _FakeDebugger:
@@ -83,9 +88,10 @@ class _FakeDebugger:
         self.calls.append(("step", mp_net.active_primitive, transition))
 
 
-def test_record_loop_emits_debugger_reset_and_step_events():
+def test_record_loop_emits_debugger_reset_and_step_events(caplog):
     dataset = _FakeDataset()
     debugger = _FakeDebugger()
+    caplog.set_level(logging.INFO)
 
     mp_net = _FakeMPNet()
 
@@ -101,7 +107,11 @@ def test_record_loop_emits_debugger_reset_and_step_events():
     assert [call[0] for call in debugger.calls] == ["reset", "step"]
     assert len(dataset.frames) == 1
     assert dataset.frames[0]["task"] == "pick task"
+    assert float(dataset.frames[0]["next.reward"][0]) == pytest.approx(1.0)
+    assert bool(dataset.frames[0]["next.done"][0])
     assert mp_net.stop_calls == 1
+    assert mp_net.full_reset_requests == 1
+    assert "reason=peg_inserted reward=1.000" in caplog.text
     assert info["transition_from"] == "pick"
     assert info["transition_to"] == "pick"
 

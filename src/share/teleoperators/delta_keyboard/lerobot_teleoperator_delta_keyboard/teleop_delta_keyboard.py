@@ -212,6 +212,19 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
         """Set the persistent gripper target used by scripted demos."""
         self._gripper_position = max(0.0, min(1.0, float(position)))
 
+    def reset_episode(self) -> None:
+        """Clear stale keys and restore the configured gripper target."""
+        self.current_pressed.clear()
+        while not self.event_queue.empty():
+            self.event_queue.get_nowait()
+        self._gripper_position = float(self.config.initial_gripper_position)
+        self._event_states = {
+            event_name: False for event_name in self.config.event_bindings
+        }
+        self._prev_event_key_state = {
+            event_name: False for event_name in self.config.event_bindings
+        }
+
     def get_teleop_events(self) -> dict[str, Any]:
         """
         Optional event interface.

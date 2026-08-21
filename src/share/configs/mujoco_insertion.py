@@ -21,6 +21,7 @@ from share.envs.manipulation_primitive_net.config_manipulation_primitive_net imp
     ManipulationPrimitiveNetConfig,
 )
 from share.envs.manipulation_primitive_net.transitions import (
+    AllOf,
     OnObservationThreshold,
     OnSuccess,
     OnTimeLimit,
@@ -54,13 +55,13 @@ def _scripted_frame() -> TaskFrame:
     )
 
 
-def _insertion_frame() -> TaskFrame:
+def _insertion_frame(min_tcp_z: float) -> TaskFrame:
     return TaskFrame(
         target=[0.0] * 6,
         origin=[0.0] * 6,
         policy_mode=[PolicyMode.RELATIVE] * 6,
         control_mode=[ControlMode.POS] * 6,
-        min_pose=[-1.2, -1.2, 0.08, -3.14, -3.14, -3.14],
+        min_pose=[-1.2, -1.2, min_tcp_z, -3.14, -3.14, -3.14],
         max_pose=[1.2, 1.2, 1.8, 3.14, 3.14, 3.14],
     )
 
@@ -75,7 +76,11 @@ class MujocoInsertionEnvConfig(ManipulationPrimitiveNetConfig):
     reset_primitive: str = "reset"
     viewer: bool = False
     viewer_camera: str | None = None
-    episode_steps: int = 150
+    episode_steps: int = 900
+    min_tcp_z: float = 0.05
+    success_insertion_depth: float = 0.07
+    success_lateral_tolerance: float = 0.01
+    success_axis_alignment: float = 0.98
     release_steps: int = 30
     teleop_mode: str = "none"
     online_steps: int = 20_000
@@ -87,6 +92,8 @@ class MujocoInsertionEnvConfig(ManipulationPrimitiveNetConfig):
     def __post_init__(self) -> None:
         if self.teleop_mode not in {"none", "keyboard"}:
             raise ValueError("teleop_mode must be 'none' or 'keyboard'.")
+        if self.min_tcp_z < 0:
+            raise ValueError("min_tcp_z must be non-negative.")
         robot_id = "mujoco-arm"
         policy = SACConfig(
             device=self.policy_device,
@@ -153,7 +160,7 @@ class MujocoInsertionEnvConfig(ManipulationPrimitiveNetConfig):
                 notes="Reset MuJoCo physics, then hand control to insertion.",
             ),
             "insert": ManipulationPrimitiveConfig(
-                task_frame=_insertion_frame(),
+                task_frame=_insertion_frame(self.min_tcp_z),
                 processor=processor,
                 policy=policy,
                 notes="Six-axis relative Cartesian insertion with force/torque observations.",
@@ -176,14 +183,34 @@ class MujocoInsertionEnvConfig(ManipulationPrimitiveNetConfig):
         }
         self.transitions = [
             OnSuccess(source="reset", target="insert", success_key="primitive_complete"),
-            OnObservationThreshold(
+            AllOf(
                 source="insert",
                 target="release",
-                obs_key="main.z.ee_pos",
-                threshold=0.12,
-                operator="le",
                 additional_reward=1.0,
                 reason="peg_inserted",
+                conditions=[
+                    OnObservationThreshold(
+                        source="insert",
+                        target="release",
+                        obs_key="main.insertion.depth",
+                        threshold=self.success_insertion_depth,
+                        operator="ge",
+                    ),
+                    OnObservationThreshold(
+                        source="insert",
+                        target="release",
+                        obs_key="main.insertion.lateral_error",
+                        threshold=self.success_lateral_tolerance,
+                        operator="le",
+                    ),
+                    OnObservationThreshold(
+                        source="insert",
+                        target="release",
+                        obs_key="main.insertion.axis_alignment",
+                        threshold=self.success_axis_alignment,
+                        operator="ge",
+                    ),
+                ],
             ),
             OnTimeLimit(source="insert", target="release", max_steps=self.episode_steps, step_key="primitive_step"),
             OnTimeLimit(

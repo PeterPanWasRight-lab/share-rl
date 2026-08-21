@@ -70,6 +70,8 @@ class MujocoRobot(Robot):
         self._joint_dof_adr: np.ndarray | None = None
         self._arm_actuator_ids: np.ndarray | None = None
         self._tcp_site_id = -1
+        self._peg_tip_site_id = -1
+        self._peg_body_id = -1
         self._fixture_body_id = -1
         self._fixture_nominal_pos: np.ndarray | None = None
         self._sensor_slices: dict[str, slice] = {}
@@ -109,6 +111,9 @@ class MujocoRobot(Robot):
             features[f"{axis_name}.task_frame_origin"] = float
         if self.config.use_gripper:
             features[f"{GRIPPER_KEY}.pos"] = float
+        features["insertion.depth"] = float
+        features["insertion.lateral_error"] = float
+        features["insertion.axis_alignment"] = float
         return features
 
     @cached_property
@@ -260,6 +265,10 @@ class MujocoRobot(Robot):
         if self.config.use_gripper:
             closure = float(self._data.qpos[self._gripper_qpos_adr] / 0.8)
             observation[f"{GRIPPER_KEY}.pos"] = np.clip(closure, 0.0, 1.0)
+        insertion_depth, lateral_error, axis_alignment = self._insertion_metrics()
+        observation["insertion.depth"] = insertion_depth
+        observation["insertion.lateral_error"] = lateral_error
+        observation["insertion.axis_alignment"] = axis_alignment
         return observation
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
@@ -329,8 +338,15 @@ class MujocoRobot(Robot):
         self._fixture_body_id = self._mujoco.mj_name2id(
             self._model, self._mujoco.mjtObj.mjOBJ_BODY, "fixture"
         )
-        if self._fixture_body_id >= 0:
-            self._fixture_nominal_pos = self._model.body_pos[self._fixture_body_id].copy()
+        self._peg_body_id = self._mujoco.mj_name2id(
+            self._model, self._mujoco.mjtObj.mjOBJ_BODY, "object_peg"
+        )
+        self._peg_tip_site_id = self._mujoco.mj_name2id(
+            self._model, self._mujoco.mjtObj.mjOBJ_SITE, "object_tip"
+        )
+        if min(self._fixture_body_id, self._peg_body_id, self._peg_tip_site_id) < 0:
+            raise ValueError("MuJoCo scene is missing insertion fixture or peg references")
+        self._fixture_nominal_pos = self._model.body_pos[self._fixture_body_id].copy()
         if self.config.use_gripper:
             gripper_joint_id = self._mujoco.mj_name2id(
                 self._model,
@@ -512,6 +528,23 @@ class MujocoRobot(Robot):
         force = self._data.sensordata[self._sensor_slices["tcp_force"]]
         torque = self._data.sensordata[self._sensor_slices["tcp_torque"]]
         return np.concatenate((force, torque)).astype(np.float64, copy=True)
+
+    def _insertion_metrics(self) -> tuple[float, float, float]:
+        """Return peg-tip depth, lateral error, and peg/socket axis alignment."""
+        fixture_rotation = self._data.xmat[self._fixture_body_id].reshape(3, 3)
+        tip_relative = fixture_rotation.T @ (
+            self._data.site_xpos[self._peg_tip_site_id]
+            - self._data.xpos[self._fixture_body_id]
+        )
+        socket_entrance = 0.06
+        depth = socket_entrance - float(tip_relative[0])
+        lateral_error = float(np.linalg.norm(tip_relative[1:]))
+
+        peg_rotation = self._data.xmat[self._peg_body_id].reshape(3, 3)
+        axis_alignment = float(
+            abs(np.dot(peg_rotation[:, 0], fixture_rotation[:, 0]))
+        )
+        return depth, lateral_error, axis_alignment
 
     def _world_to_task_pose(self, world_pose: np.ndarray) -> np.ndarray:
         origin = np.asarray(self.task_frame.origin or [0.0] * 6, dtype=np.float64)

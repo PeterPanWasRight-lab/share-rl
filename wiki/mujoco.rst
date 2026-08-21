@@ -10,6 +10,11 @@ peg between the fingers and physically closes the 2F-85; opening the gripper
 releases it under gravity. The task still starts from this initialized grasp so
 it focuses on the insertion stage. Upstream commits and licenses are recorded
 in ``src/share/robots/mujoco/assets/README.md``.
+The ACT socket keeps its four collision walls and an empty center; no reference
+or placeholder geometry occupies the insertion channel.
+The controller's ``tool_tcp`` is colocated with Menagerie's existing
+``gripper_pinch`` site. The workpiece tip remains a separate ``object_tip`` site
+used only for physical insertion-success measurements.
 
 The six UR arm actuators retain MuJoCo Menagerie's position-servo model.
 Task-space ``ee_pos`` commands are converted to joint-position targets with
@@ -51,6 +56,18 @@ registered wrist camera instead of the free viewer camera:
 .. code-block:: bash
 
    share-mujoco-demo --viewer-camera=wrist
+
+Offline recording gives the operator 900 control steps (30 seconds at 30 Hz)
+by default. Success is measured from the free workpiece's ``object_tip`` site in
+the fixture frame, not from the gripper TCP. It requires at least 70 mm insertion
+depth, at most 10 mm lateral error, and peg/socket axis alignment of at least 0.98.
+The successful frame is stored with reward 1 and ``done=true``; a time limit
+stores reward 0 with ``truncated=true``. Either outcome makes the next recording
+iteration perform a full simulation reset and start a new insertion episode.
+The insertion TCP lower bound is ``min_tcp_z=0.05 m``, matching the workbench
+surface instead of stopping 30 mm above it. A full reset also clears stale
+keyboard state and restores the teleoperator's closed-gripper target before the
+first action, so an open command from the previous episode cannot drop the peg.
 
 Use ``--manual`` to disable the automatic downward insertion command while
 retaining keyboard Cartesian and gripper control.
