@@ -113,7 +113,6 @@ class OnObservationThreshold(Transition):
     def evaluate(self, obs: dict[str, Any], info: dict[str, Any]) -> Outcome:
         value = to_scalar(resolve_value(obs, self.obs_key))
         fired = compare(value, self.threshold, self.operator)
-        print(f"THRESHOLD {self.obs_key}: {value:.1f}", self.operator, self.threshold, "?", fired)
         return Outcome(
             terminated=fired,
             reward=self.additional_reward,
@@ -148,9 +147,12 @@ class RewardClassifierTransition(Transition):
     (plus ``observation.state`` for the state-augmented variant, auto-detected from the
     checkpoint config). The model and its normalization preprocessor are loaded lazily
     and cached per (path, device), so several edges can share one classifier instance.
+    ``metric_key`` retains the lightweight mode that reads a precomputed probability
+    from ``info`` instead of loading a checkpoint.
     """
 
     pretrained_path: str = ""
+    metric_key: str | None = None
     threshold: float = 0.9
     operator: Literal["ge", "gt", "le", "lt", "eq", "ne"] = "ge"
     additional_reward: float = 1.0
@@ -231,7 +233,11 @@ class RewardClassifierTransition(Transition):
         return float(output.probabilities.reshape(-1)[0].item())
 
     def evaluate(self, obs: dict[str, Any], info: dict[str, Any]) -> Outcome:
-        probability = self._success_probability(obs)
+        probability = (
+            float(to_scalar(resolve_value(info, self.metric_key)))
+            if self.metric_key is not None
+            else self._success_probability(obs)
+        )
         info[self.prob_info_key] = probability
         fired = compare(probability, self.threshold, self.operator)
         return Outcome(

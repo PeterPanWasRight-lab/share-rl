@@ -200,6 +200,39 @@ def _reached_episode_limit(dataset: LeRobotDataset, num_episodes: int | None) ->
     return num_episodes is not None and dataset.num_episodes >= num_episodes
 
 
+def _commit_episode_buffers(
+    datasets: dict[str, LeRobotDataset],
+    *,
+    rerecord: bool,
+    num_episodes: int | None,
+    play_sounds: bool,
+) -> bool:
+    """Save or clear the primitive datasets that actually received frames."""
+    buffered = [
+        (name, dataset)
+        for name, dataset in datasets.items()
+        if dataset.writer.episode_buffer["size"] > 0
+    ]
+    if not buffered:
+        log_say("Dataset is empty, continue execution", play_sounds, blocking=True)
+        return False
+
+    if rerecord:
+        log_say("Re-record episode", play_sounds, blocking=True)
+        for _, dataset in buffered:
+            dataset.clear_episode_buffer()
+        return False
+
+    for name, dataset in buffered:
+        log_say("Save episode", play_sounds, blocking=True)
+        dataset.save_episode()
+        logging.info("[%s] Episodes saved: %s", name, dataset.num_episodes)
+
+    return bool(datasets) and all(
+        _reached_episode_limit(dataset, num_episodes) for dataset in datasets.values()
+    )
+
+
 @parser.wrap()
 def record(cfg: RecordConfig) -> LeRobotDataset:
     cfg.resolve_policy_overrides()
@@ -214,19 +247,21 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
     # make
     mp_net = ManipulationPrimitiveNet(cfg.env)
-    if cfg.dataset is not None and cfg.dataset.root is not None:
-        save_env_config_snapshot(cfg.env, cfg.dataset.root)
-    force_intervention = not cfg.use_policy
-    mp_net.set_step_info({TeleopEvents.IS_INTERVENTION: True} if force_intervention else None)
-    debugger = None
-    datasets, policies, preprocessors, postprocessors = make_policies_and_datasets(cfg)
-
     try:
+        if cfg.dataset is not None and cfg.dataset.root is not None:
+            save_env_config_snapshot(cfg.env, cfg.dataset.root)
+        force_intervention = not cfg.use_policy
+        mp_net.set_step_info({TeleopEvents.IS_INTERVENTION: True} if force_intervention else None)
+        debugger = None
+        datasets, policies, preprocessors, postprocessors = make_policies_and_datasets(cfg)
+
         with MultiVideoEncodingManager(datasets):
             while True:
-                dataset = datasets.get(mp_net.active_primitive, None)
-                if dataset is not None:
-                    logging.info(f"[{mp_net.active_primitive}] Starting episode {dataset.num_episodes + 1}")
+                active_dataset = datasets.get(mp_net.active_primitive, None)
+                if active_dataset is not None:
+                    logging.info(
+                        f"[{mp_net.active_primitive}] Starting episode {active_dataset.num_episodes + 1}"
+                    )
                 log_say(f"Record episode for {mp_net.active_primitive}", play_sounds=cfg.play_sounds)
 
                 info = record_loop(
@@ -251,21 +286,13 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 if cfg.stop_after_terminal and mp_net.in_terminal:
                     break
 
-                if dataset is None:
-                    continue
-
-                # dataset ops, saving / clearing episode buffers
-                if has_event(info, TeleopEvents.RERECORD_EPISODE):
-                    log_say("Re-record episode", cfg.play_sounds, blocking=True)
-                    dataset.clear_episode_buffer()
-                elif dataset.writer.episode_buffer["size"] > 0:
-                    log_say("Save episode", cfg.play_sounds, blocking=True)
-                    dataset.save_episode()
-                    logging.info(f"[{mp_net.active_primitive}] Episodes saved: {dataset.num_episodes}")
-                    if _reached_episode_limit(dataset, cfg.dataset.num_episodes):
-                        break
-                else:
-                    log_say("Dataset is empty, continue execution", cfg.play_sounds, blocking=True)
+                if _commit_episode_buffers(
+                    datasets,
+                    rerecord=has_event(info, TeleopEvents.RERECORD_EPISODE),
+                    num_episodes=cfg.dataset.num_episodes,
+                    play_sounds=cfg.play_sounds,
+                ):
+                    break
     finally:
         #debugger.close()
         log_say("Stop recording", cfg.play_sounds, blocking=True)
@@ -274,7 +301,11 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
 def main():
     import experiments
-    record()
+    import share.configs.mujoco_insertion  # noqa: F401
+    try:
+        record()
+    except KeyboardInterrupt:
+        logging.info("Recording interrupted by user.")
 
 if __name__ == "__main__":
     main()

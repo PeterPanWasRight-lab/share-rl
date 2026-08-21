@@ -14,4 +14,5 @@ happening.
    architecture
    connector_setup
    examples
+   mujoco
    open_problems

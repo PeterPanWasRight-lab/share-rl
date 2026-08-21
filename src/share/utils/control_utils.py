@@ -1,5 +1,7 @@
+import json
 import logging
 import time
+from datetime import datetime
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -27,6 +29,61 @@ except ImportError:
 
 _OFFLINE_VISION_CACHE_PREFIX = "observation.cache."
 _LIVE_IMAGE_PREFIX = "observation.images."
+
+
+def _prepare_dataset_root_for_create(root: Path) -> bool:
+    """Prepare a recording root and return whether it should be resumed."""
+    if not root.exists():
+        return False
+
+    info_path = root / "meta" / "info.json"
+    is_zero_frame_stub = False
+    is_resumable_dataset = False
+    if info_path.is_file():
+        try:
+            info = json.loads(info_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            info = None
+        if isinstance(info, dict):
+            has_payload = any(
+                path.is_file()
+                for payload_dir in ("data", "videos", "images")
+                for path in (root / payload_dir).rglob("*")
+            )
+            is_zero_frame_stub = (
+                int(info.get("total_frames", -1)) == 0
+                and int(info.get("total_episodes", -1)) == 0
+                and not has_payload
+            )
+            is_resumable_dataset = (
+                int(info.get("total_frames", -1)) > 0
+                and int(info.get("total_episodes", -1)) > 0
+                and has_payload
+                and (root / "meta" / "episodes").is_dir()
+                and (root / "meta" / "tasks.parquet").is_file()
+            )
+    elif root.is_dir():
+        is_zero_frame_stub = not any(root.iterdir())
+
+    if is_resumable_dataset:
+        logging.info("Found existing dataset '%s'; resuming it automatically.", root)
+        return True
+
+    if not is_zero_frame_stub:
+        raise FileExistsError(
+            f"Dataset directory exists but is not safely resumable: '{root}'. "
+            "Choose a new --dataset.root or inspect/archive this directory manually."
+        )
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    archive = root.with_name(f"{root.name}.incomplete-{timestamp}")
+    root.rename(archive)
+    logging.warning(
+        "Archived zero-frame dataset stub '%s' as '%s' before starting a fresh recording.",
+        root,
+        archive,
+    )
+    return False
 
 
 def _remove_redundant_offline_cache_features(policy_cfg, env_features: dict) -> None:
@@ -74,7 +131,11 @@ def make_policies_and_datasets(cfg: RecordConfig):
                 root = Path(cfg.dataset.root) / name
                 repo_id = f"{cfg.dataset.repo_id}-{name}"
 
-                if cfg.resume:
+                resume_dataset = bool(cfg.resume)
+                if not resume_dataset:
+                    resume_dataset = _prepare_dataset_root_for_create(root)
+
+                if resume_dataset:
                     datasets[name] = LeRobotDataset.resume(
                         repo_id,
                         root=root,

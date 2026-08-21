@@ -2,6 +2,15 @@
 
 `share-rl` is a LeRobot extension for structured manipulation workflows.
 
+## MuJoCo insertion backend
+
+An optional MuJoCo backend provides the MuJoCo Menagerie UR5e and Robotiq
+2F-85, ACT/ALOHA insertion workpieces, RGB cameras, and a wrist six-axis
+force/torque sensor without changing the MP-Net robot interface. Install it with
+`pip install -e '.[mujoco]'` and preview it with `share-mujoco-demo`. The
+complete recording and distributed actor/learner pipeline is in
+`wiki/mujoco.rst`.
+
 The repository adds four main things on top of LeRobot:
 
 - new robot and teleoperator integrations, packaged as sibling installable Python projects

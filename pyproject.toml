@@ -41,25 +41,28 @@ classifiers = [
 ]
 keywords = ["lerobot", "share", "robotics", "teleoperation", "offline rl"]
 dependencies = [
-    "lerobot>=0.5.0",
+    "lerobot>=0.5.0,<0.6.0",
     "modern_robotics>=1.1.1,<2.0.0",
     "scipy>=1.11.0,<2.0.0",
     "matplotlib>=3.8.0,<4.0.0",
     "atomics>=1.0.0",
     "pyrealsense2>=2.56.5",
-    "grpcio>=1.80.0"
+    "grpcio>=1.80.0",
+    "pyserial>=3.5,<4.0"
 ]
 
 [project.optional-dependencies]
 ur = [
-    "lerobot_robot_ur @ file:src/share/robots/ur",
+    "ur-rtde==1.6.2",
 ]
 spacemouse = [
-    "lerobot_teleoperator_spacemouse @ file:src/share/teleoperators/spacemouse",
+    "easyhid==0.0.10",
 ]
 aloha = [
-    "lerobot_robot_viperx @ file:src/share/robots/viperx",
-    "lerobot_teleoperator_widowx @ file:src/share/teleoperators/widowx",
+    "dynamixel-sdk>=3.7.31,<3.9.0",
+]
+mujoco = [
+    "mujoco>=3.2.0,<4.0.0",
 ]
 
 pose-estimation = [
@@ -71,6 +74,7 @@ test = [
     "pytest-cov>=5.0.0,<8.0.0",
 ]
 all = [
+    "share-rl[mujoco]",
     "share-rl[ur]",
     "share-rl[spacemouse]",
     "share-rl[aloha]",
@@ -80,6 +84,9 @@ all = [
 
 [project.scripts]
 share-record = "share.scripts.record:main"
+share-actor = "share.scripts.actor_server:main"
+share-learner = "share.scripts.learner_server:main"
+share-mujoco-demo = "share.scripts.mujoco_demo:main"
 share-design-constraints = "share.scripts.design_constraints:design_constraints"
 share-train = "share.scripts.train:main"
 share-eval = "share.scripts.eval_on_dataset:main"
@@ -89,6 +96,25 @@ share-visualize = "share.scripts.visualize:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["share*"]
+
+[tool.setuptools.package-data]
+"share.robots.mujoco" = [
+    "assets/*.xml",
+    "assets/*.md",
+    "assets/act/*.xml",
+    "assets/act/*.md",
+    "assets/act/LICENSE",
+    "assets/menagerie/universal_robots_ur5e/*.xml",
+    "assets/menagerie/universal_robots_ur5e/*.md",
+    "assets/menagerie/universal_robots_ur5e/*.png",
+    "assets/menagerie/universal_robots_ur5e/LICENSE",
+    "assets/menagerie/universal_robots_ur5e/assets/*.obj",
+    "assets/menagerie/robotiq_2f85/*.xml",
+    "assets/menagerie/robotiq_2f85/*.md",
+    "assets/menagerie/robotiq_2f85/*.png",
+    "assets/menagerie/robotiq_2f85/LICENSE",
+    "assets/menagerie/robotiq_2f85/assets/*.stl",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

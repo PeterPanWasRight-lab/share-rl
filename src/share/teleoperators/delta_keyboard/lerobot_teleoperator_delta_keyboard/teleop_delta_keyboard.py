@@ -9,8 +9,10 @@ from typing import Any
 
 from lerobot.processor import RobotAction
 from lerobot.processor.hil_processor import HasTeleopEvents
-from lerobot.teleoperators import TeleopEvents, Teleoperator
+from lerobot.teleoperators import Teleoperator
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
+
+from share.teleoperators.utils import TeleopEvents
 
 from .config_delta_keyboard import (
     KeyboardAxisBinding,
@@ -65,6 +67,7 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
         self.current_pressed: dict[str, bool] = {}
         self.listener = None
         self.logs: dict[str, float] = {}
+        self._gripper_position = float(self.config.initial_gripper_position)
 
         self._event_states: dict[str, bool] = {
             event_name: False for event_name in self.config.event_bindings
@@ -75,7 +78,10 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
 
     @property
     def action_features(self) -> dict[str, type]:
-        return {f"{axis}.vel": float for axis in self.AXES}
+        features = {f"{axis}.vel": float for axis in self.AXES}
+        if self.config.gripper_enabled:
+            features["gripper.pos"] = float
+        return features
 
     @property
     def feedback_features(self) -> dict[str, type]:
@@ -121,7 +127,14 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
 
         # Special key
         if keyboard is not None and isinstance(key, keyboard.Key):
-            return key.name.lower()
+            token = key.name.lower()
+            # pynput aliases left Ctrl/Alt to the unsuffixed enum names on
+            # Linux, while right Alt may be exposed as AltGr.
+            return {
+                "ctrl": "ctrl_l",
+                "alt": "alt_l",
+                "alt_gr": "alt_r",
+            }.get(token, token)
 
         # Fallback
         try:
@@ -152,7 +165,7 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
                 self.current_pressed.pop(token, None)
 
     def _axis_value(self, binding: KeyboardAxisBinding) -> float:
-        if not binding.enabled:
+        if not binding.enabled or not self._all_keys_pressed(binding.required_keys):
             return 0.0
 
         value = 0.0
@@ -162,6 +175,14 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
             value -= 1.0
 
         return value * binding.scale
+
+    def _all_keys_pressed(self, keys: tuple[str, ...]) -> bool:
+        return all(self.current_pressed.get(key, False) for key in keys)
+
+    def _gripper_key_pressed(self, key: str) -> bool:
+        return self._all_keys_pressed(self.config.gripper_required_keys) and self.current_pressed.get(
+            key, False
+        )
 
     @check_if_not_connected
     def get_action(self) -> RobotAction:
@@ -177,9 +198,19 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
             "ry.vel": self._axis_value(self.config.ry),
             "rz.vel": self._axis_value(self.config.rz),
         }
+        if self.config.gripper_enabled:
+            if self._gripper_key_pressed(self.config.gripper_open_key):
+                self._gripper_position = 0.0
+            if self._gripper_key_pressed(self.config.gripper_close_key):
+                self._gripper_position = 1.0
+            action["gripper.pos"] = self._gripper_position
 
         self.logs["read_pos_dt_s"] = time.perf_counter() - start
         return action
+
+    def set_gripper_position(self, position: float) -> None:
+        """Set the persistent gripper target used by scripted demos."""
+        self._gripper_position = max(0.0, min(1.0, float(position)))
 
     def get_teleop_events(self) -> dict[str, Any]:
         """
@@ -207,7 +238,12 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
 
         if self.config.include_intervention_event:
             action = self.get_action()
-            events[TeleopEvents.IS_INTERVENTION] = any(abs(v) > 0.0 for v in action.values())
+            motion_active = any(abs(action[f"{axis}.vel"]) > 0.0 for axis in self.AXES)
+            gripper_active = self.config.gripper_enabled and (
+                self._gripper_key_pressed(self.config.gripper_open_key)
+                or self._gripper_key_pressed(self.config.gripper_close_key)
+            )
+            events[TeleopEvents.IS_INTERVENTION] = motion_active or gripper_active
 
         return events
 

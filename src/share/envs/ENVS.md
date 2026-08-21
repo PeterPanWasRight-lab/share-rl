@@ -123,3 +123,7 @@ The primitive config is a registry with three intended primitive families:
 Configs stay declarative: runtime target state lives in the primitive env. `move_delta` updates the env target on entry so downstream action projection and transition checks observe the same target. `open_loop_trajectory` is scripted-only in v1, publishes its final goal as `primitive_target_pose`, and exposes completion/progress through the info keys above while the env handles stepping.
 
 Task frames may also carry `controller_overrides`. The field stays generic in shared config and serialization code, while each robot wrapper translates the supported keys into concrete controller commands. In this patch, UR consumes wrench/compliance overrides so different primitive states can use different safety and wrench limits.
+
+Simulation robots may expose an optional `reset_simulation(seed=...)` hook. MP-Net
+calls it exactly once at the start of a full episode reset, before entering the
+reset primitive. Primitive-to-primitive transitions do not reset physics.

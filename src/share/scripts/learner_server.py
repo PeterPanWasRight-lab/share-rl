@@ -1212,6 +1212,11 @@ def _use_threads(policy_cfg: SACPolicy | Any) -> bool:
     return policy_cfg.concurrency.learner == "threads"
 
 
-if __name__ == "__main__":
+def main() -> None:
     import experiments
+    import share.configs.mujoco_insertion  # noqa: F401
     train_cli()
+
+
+if __name__ == "__main__":
+    main()

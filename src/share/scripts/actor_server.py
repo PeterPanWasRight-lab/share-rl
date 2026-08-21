@@ -608,6 +608,11 @@ def _use_threads(policy_cfg: SACConfig) -> bool:
     return policy_cfg.concurrency.actor == "threads"
 
 
-if __name__ == "__main__":
+def main() -> None:
     import experiments
+    import share.configs.mujoco_insertion  # noqa: F401
     actor_cli()
+
+
+if __name__ == "__main__":
+    main()

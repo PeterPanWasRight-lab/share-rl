@@ -16,6 +16,7 @@ class KeyboardAxisBinding:
 
     pos_key: str | None = None
     neg_key: str | None = None
+    required_keys: tuple[str, ...] = ()
     scale: float = 1.0
     enabled: bool = True
 
@@ -43,7 +44,10 @@ class KeyboardVelocityTeleopConfig(TeleoperatorConfig):
     Key tokens are normalized strings, for example:
         - Characters: 'w', 'a', 's', 'd', 'j', 'k'
         - Special keys: 'up', 'down', 'left', 'right', 'space', 'shift', 'shift_r',
-          'ctrl_l', 'ctrl_r', 'esc', 'enter', 'tab', 'backspace'
+          'alt_l', 'alt_r', 'ctrl_l', 'ctrl_r', 'esc', 'enter', 'tab', 'backspace'
+
+    ``required_keys`` makes an axis or gripper binding active only while all
+    listed modifier keys are held.
     """
 
     x: KeyboardAxisBinding = field(
@@ -66,6 +70,12 @@ class KeyboardVelocityTeleopConfig(TeleoperatorConfig):
     )
 
     event_bindings: dict[str, KeyboardEventBinding] = field(default_factory=dict)
+
+    gripper_enabled: bool = False
+    gripper_open_key: str = "g"
+    gripper_close_key: str = "h"
+    gripper_required_keys: tuple[str, ...] = ()
+    initial_gripper_position: float = 1.0
 
     include_intervention_event: bool = True
     escape_disconnects: bool = True

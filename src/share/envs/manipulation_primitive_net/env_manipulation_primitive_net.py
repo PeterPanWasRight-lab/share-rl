@@ -154,7 +154,8 @@ class ManipulationPrimitiveNet(gym.Env):
         for robot in self.robot_dict.values():
             robot.disconnect()
         for teleop in self.teleop_dict.values():
-            teleop.disconnect()
+            if getattr(teleop, "is_connected", False):
+                teleop.disconnect()
 
         keys = list(self._envs.keys())
         for k in keys:
@@ -334,7 +335,14 @@ class ManipulationPrimitiveNet(gym.Env):
         """
         self._pending_entry_context = None
         self._active = self.config.reset_primitive
-        self._shared_runtime_values.clear()
+        shared_runtime_values = getattr(self, "_shared_runtime_values", None)
+        if shared_runtime_values is not None:
+            shared_runtime_values.clear()
+        for robot_index, robot in enumerate(getattr(self, "robot_dict", {}).values()):
+            reset_simulation = getattr(robot, "reset_simulation", None)
+            if callable(reset_simulation):
+                robot_seed = None if seed is None else seed + robot_index
+                reset_simulation(seed=robot_seed)
         for name, primitive in self.config.primitives.items():
             if name == self._active:
                 continue
@@ -392,9 +400,10 @@ class ManipulationPrimitiveNet(gym.Env):
             # to the robot on its first send_action. Tag the context with the origin
             # published alongside the pose sample (falling back to the last-stepped
             # primitive's origin), so entry poses are transformed between the frames.
-            origin_primitive = self.config.primitives.get(self._last_stepped_primitive, primitive)
+            last_stepped_primitive = getattr(self, "_last_stepped_primitive", None)
+            origin_primitive = self.config.primitives.get(last_stepped_primitive, primitive)
             entry_context = PrimitiveEntryContext(
-                source_primitive=self._last_stepped_primitive,
+                source_primitive=last_stepped_primitive,
                 target_primitive=self._active,
                 observation=dict(processed_obs),
                 task_frame_origin=observed_task_frame_origins(
