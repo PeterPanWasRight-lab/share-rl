@@ -446,7 +446,7 @@ def test_mujoco_success_rewards_and_requests_next_episode_reset():
         net.close()
 
 
-def test_mujoco_misaligned_peg_does_not_succeed_at_lower_limit():
+def test_mujoco_misaligned_peg_does_not_succeed_when_commanded_below_table():
     net = ManipulationPrimitiveNet(
         MujocoInsertionEnvConfig(viewer=False, episode_steps=900)
     )
@@ -465,8 +465,8 @@ def test_mujoco_misaligned_peg_does_not_succeed_at_lower_limit():
             transition = net.step(action)
 
         observation = robot.get_observation()
-        assert net.config.primitives["insert"].task_frame["main"].min_pose[2] == pytest.approx(0.05)
-        assert robot._virtual_target_task[2] == pytest.approx(0.05)
+        assert net.config.primitives["insert"].task_frame["main"].min_pose[2] == pytest.approx(-1.2)
+        assert robot._virtual_target_task[2] < 0.05
         assert observation["insertion.depth"] > 0.01
         assert (
             observation["insertion.lateral_error"]

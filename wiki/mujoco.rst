@@ -64,10 +64,13 @@ depth, at most 10 mm lateral error, and peg/socket axis alignment of at least 0.
 The successful frame is stored with reward 1 and ``done=true``; a time limit
 stores reward 0 with ``truncated=true``. Either outcome makes the next recording
 iteration perform a full simulation reset and start a new insertion episode.
-The insertion TCP lower bound is ``min_tcp_z=0.05 m``, matching the workbench
-surface instead of stopping 30 mm above it. A full reset also clears stale
-keyboard state and restores the teleoperator's closed-gripper target before the
-first action, so an open command from the previous episode cannot drop the peg.
+The default insertion workspace does not treat the workbench as a TCP safety
+plane: ``min_tcp_z=-1.2 m`` only supplies a broad numerical bound. ``tool_tcp``
+is a mathematical frame and may cross the table plane when geometry permits;
+motion is resisted by contacts on the actual gripper, workpiece, fixture, and
+workbench geoms. A full reset also clears stale keyboard state and restores the
+teleoperator's closed-gripper target before the first action, so an open command
+from the previous episode cannot drop the peg.
 
 Use ``--manual`` to disable the automatic downward insertion command while
 retaining keyboard Cartesian and gripper control.

@@ -77,7 +77,7 @@ class MujocoInsertionEnvConfig(ManipulationPrimitiveNetConfig):
     viewer: bool = False
     viewer_camera: str | None = None
     episode_steps: int = 900
-    min_tcp_z: float = 0.05
+    min_tcp_z: float = -1.2
     success_insertion_depth: float = 0.07
     success_lateral_tolerance: float = 0.01
     success_axis_alignment: float = 0.98
@@ -92,8 +92,8 @@ class MujocoInsertionEnvConfig(ManipulationPrimitiveNetConfig):
     def __post_init__(self) -> None:
         if self.teleop_mode not in {"none", "keyboard"}:
             raise ValueError("teleop_mode must be 'none' or 'keyboard'.")
-        if self.min_tcp_z < 0:
-            raise ValueError("min_tcp_z must be non-negative.")
+        if self.min_tcp_z >= 1.8:
+            raise ValueError("min_tcp_z must be below the configured maximum TCP z.")
         robot_id = "mujoco-arm"
         policy = SACConfig(
             device=self.policy_device,
