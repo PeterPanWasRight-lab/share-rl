@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import logging
 import os
+import sys
 import time
 from functools import lru_cache
 from queue import Empty
@@ -431,7 +432,8 @@ def act_with_policy(
             extra = info.get("record_status")
             if extra:
                 status += f"  |  {extra}"
-            print(f"\r{status}\033[K", end="", flush=True)
+            if sys.stdout.isatty():
+                print(f"\r{status}\033[K", end="", flush=True)
 
             log_runtime_frequency(
                 prefix="ACTOR",

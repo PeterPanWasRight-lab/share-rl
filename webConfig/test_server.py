@@ -78,6 +78,82 @@ class ServerApiTest(unittest.TestCase):
         self.assertTrue(any(value.endswith("learner_server.py") for value in learner))
         self.assertTrue(any(value.endswith("actor_server.py") for value in actor))
         self.assertIn("--batch_size=512", learner)
+        self.assertFalse(any(value.startswith("--policy.path=") for value in learner))
+        self.assertFalse(any(value.startswith("--policy.path=") for value in actor))
+
+    def test_console_assets_endpoint(self):
+        assets = {
+            "datasets": [{"path": "outputs/demos", "label": "demo", "mtime": 2}],
+            "checkpoints": [{"path": "outputs/run/pretrained_model", "label": "checkpoint", "mtime": 3}],
+        }
+        with patch.object(self.server, "discover_project_assets", return_value=assets):
+            response = self.client.get("/api/console/assets")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), assets)
+
+    def test_log_line_limit_and_clear_endpoints(self):
+        with patch.object(self.server.service_manager, "log_tail", return_value="service tail") as tail:
+            response = self.client.get("/api/console/services/actor/log?lines=777")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["text"], "service tail")
+        tail.assert_called_once_with("actor", lines=777)
+        self.assertEqual(self.client.get("/api/console/services/actor/log?lines=0").status_code, 400)
+
+        with patch.object(self.server.service_manager, "clear_log") as clear:
+            response = self.client.post("/api/console/services/actor/log/clear", json={})
+        self.assertEqual(response.status_code, 200)
+        clear.assert_called_once_with("actor")
+
+        with patch.object(self.server.example_runner, "log_tail", return_value="viewer tail") as tail:
+            response = self.client.get("/api/console/example-run/log?lines=321")
+        self.assertEqual(response.get_json()["text"], "viewer tail")
+        tail.assert_called_once_with(lines=321)
+
+        with patch.object(self.server.example_runner, "clear_log") as clear:
+            response = self.client.post("/api/console/example-run/log/clear", json={})
+        self.assertEqual(response.status_code, 200)
+        clear.assert_called_once_with()
+
+    def test_asset_discovery_and_role_specific_policy_paths(self):
+        original_repo_root = self.runtime.REPO_ROOT
+        project = Path(self.temporary.name)
+        self.runtime.REPO_ROOT = project
+        try:
+            demo_info = project / "outputs" / "demos" / "pick" / "meta" / "info.json"
+            demo_info.parent.mkdir(parents=True)
+            demo_info.write_text("{}", encoding="utf-8")
+            demo_info.with_name("stats.json").write_text("{}", encoding="utf-8")
+            online_info = project / "outputs" / "run" / "pick" / "dataset" / "meta" / "info.json"
+            online_info.parent.mkdir(parents=True)
+            online_info.write_text("{}", encoding="utf-8")
+            online_info.with_name("stats.json").write_text("{}", encoding="utf-8")
+            learner_policy = project / "outputs" / "run" / "pick" / "checkpoints" / "001000" / "pretrained_model"
+            actor_policy = project / "outputs" / "run" / "pick" / "checkpoints" / "002000" / "pretrained_model"
+            for policy in (learner_policy, actor_policy):
+                policy.mkdir(parents=True)
+                (policy / "config.json").write_text("{}", encoding="utf-8")
+
+            assets = self.runtime.discover_project_assets()
+            self.assertEqual([item["path"] for item in assets["datasets"]], ["outputs/demos"])
+            self.assertEqual(len(assets["checkpoints"]), 2)
+
+            profile = dict(self.runtime.DEFAULT_PROFILE)
+            profile.update({
+                "dataset_root": "outputs/demos",
+                "learner_checkpoint": "outputs/run/pick/checkpoints/001000/pretrained_model",
+                "actor_checkpoint": "outputs/run/pick/checkpoints/002000/pretrained_model",
+            })
+            learner = self.runtime.build_service_command("learner", profile)
+            actor = self.runtime.build_service_command("actor", profile)
+            self.assertNotIn("--dataset.type=dataset", learner)
+            self.assertIn(f"--policy.path={learner_policy}", learner)
+            self.assertIn(f"--policy.path={actor_policy}", actor)
+            self.assertIn(f"--dataset.root={project / 'outputs' / 'demos'}", learner)
+            self.assertFalse(any(value.startswith("--dataset.root=") for value in actor))
+            self.assertIn(f"--output_dir={project / 'outputs' / 'web-console' / 'insertion'}", learner)
+            self.assertIn(f"--output_dir={project / 'outputs' / 'web-console' / 'insertion'}", actor)
+        finally:
+            self.runtime.REPO_ROOT = original_repo_root
 
     def test_console_rejects_unsafe_profile_and_non_json_mutations(self):
         profile = self.client.get("/api/console/profile").get_json()

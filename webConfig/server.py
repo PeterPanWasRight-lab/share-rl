@@ -22,7 +22,9 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from console_runtime import (  # noqa: E402
+    _number,
     build_service_command,
+    discover_project_assets,
     example_runner,
     fetch_replay_metrics,
     load_profile,
@@ -156,6 +158,11 @@ def get_console_profile():
     return jsonify(load_profile())
 
 
+@app.get("/api/console/assets")
+def console_assets():
+    return jsonify(discover_project_assets())
+
+
 @app.put("/api/console/profile")
 def put_console_profile():
     if not request.is_json:
@@ -204,8 +211,20 @@ def stop_console_service(role: str):
 @app.get("/api/console/services/<role>/log")
 def console_service_log(role: str):
     try:
-        return jsonify({"role": role, "text": service_manager.log_tail(role)})
+        lines = int(_number(request.args.get("lines", 120), "lines", minimum=1, maximum=5000, integer=True))
+        return jsonify({"role": role, "text": service_manager.log_tail(role, lines=lines)})
     except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/console/services/<role>/log/clear")
+def clear_console_service_log(role: str):
+    if not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 415
+    try:
+        service_manager.clear_log(role)
+        return jsonify({"role": role, "cleared": True})
+    except (OSError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
 
 
@@ -262,7 +281,22 @@ def stop_console_example():
 
 @app.get("/api/console/example-run/log")
 def console_example_log():
-    return jsonify({"text": example_runner.log_tail()})
+    try:
+        lines = int(_number(request.args.get("lines", 160), "lines", minimum=1, maximum=5000, integer=True))
+        return jsonify({"text": example_runner.log_tail(lines=lines)})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/console/example-run/log/clear")
+def clear_console_example_log():
+    if not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 415
+    try:
+        example_runner.clear_log()
+        return jsonify({"cleared": True})
+    except OSError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.get("/api/configs")

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SHaRe-RL 实验控制台</title>
-  <link rel="stylesheet" href="/static/console.css" />
+  <link rel="stylesheet" href="/static/console.css?v=20260827-cold-start" />
 </head>
 <body>
   <aside class="sidebar">
@@ -77,19 +77,21 @@
     </section>
 
     <section class="view" id="view-services">
-      <div class="notice"><strong>启动顺序：</strong>先启动 Learner，确认状态为运行中，再启动 Actor。停止时建议先 Actor、后 Learner。</div>
+      <div class="notice"><strong>启动顺序：</strong>先启动 Learner，确认状态为运行中，再启动 Actor。启动按钮会先自动保存算法参数；停止时建议先 Actor、后 Learner。</div>
       <div class="service-grid">
         <article class="panel service-card" data-role="learner">
           <div class="service-title"><div class="service-icon learner">L</div><div><h3>Learner</h3><p>优化策略、维护 Buffer、发布参数</p></div><span class="status-pill">已停止</span></div>
           <dl><div><dt>PID</dt><dd data-value="pid">—</dd></div><div><dt>运行时间</dt><dd data-value="uptime">—</dd></div><div><dt>退出码</dt><dd data-value="exit">—</dd></div></dl>
           <div class="button-row"><button class="primary start-service" data-role="learner">启动 Learner</button><button class="danger stop-service" data-role="learner">停止</button></div>
-          <pre class="log-box" data-log="learner">尚无日志</pre>
+          <div class="log-toolbar"><span>Learner 日志</span><div><label>显示 <select class="log-lines" data-log-kind="learner"><option>50</option><option>100</option><option selected>200</option><option>500</option><option>1000</option><option>2000</option></select> 行</label><button type="button" class="text-button copy-log" data-copy-target="learner-log">复制</button><button type="button" class="text-button clear-log" data-log-kind="learner">清空</button></div></div>
+          <pre class="log-box" id="learner-log" data-log="learner">尚无日志</pre>
         </article>
         <article class="panel service-card" data-role="actor">
           <div class="service-title"><div class="service-icon actor">A</div><div><h3>Actor</h3><p>环境交互、推理、发送 transition</p></div><span class="status-pill">已停止</span></div>
           <dl><div><dt>PID</dt><dd data-value="pid">—</dd></div><div><dt>运行时间</dt><dd data-value="uptime">—</dd></div><div><dt>退出码</dt><dd data-value="exit">—</dd></div></dl>
           <div class="button-row"><button class="primary start-service" data-role="actor">启动 Actor</button><button class="danger stop-service" data-role="actor">停止</button></div>
-          <pre class="log-box" data-log="actor">尚无日志</pre>
+          <div class="log-toolbar"><span>Actor 日志</span><div><label>显示 <select class="log-lines" data-log-kind="actor"><option>50</option><option>100</option><option selected>200</option><option>500</option><option>1000</option><option>2000</option></select> 行</label><button type="button" class="text-button copy-log" data-copy-target="actor-log">复制</button><button type="button" class="text-button clear-log" data-log-kind="actor">清空</button></div></div>
+          <pre class="log-box" id="actor-log" data-log="actor">尚无日志</pre>
         </article>
       </div>
       <article class="panel command-panel"><div class="panel-head"><div><p class="eyebrow">COMMAND PREVIEW</p><h3>实际启动参数</h3></div><div><button class="text-button preview-command" data-role="learner">Learner</button><button class="text-button preview-command" data-role="actor">Actor</button></div></div><pre id="command-preview">选择服务查看白名单生成的 argv。</pre></article>
@@ -110,7 +112,7 @@
       </article>
       <div class="editor-shell">
         <iframe id="editor-frame" title="MP-Net 状态机编辑器" src="/editor"></iframe>
-        <details class="viewer-log"><summary>试运行日志</summary><pre id="viewer-example-log">尚无日志</pre></details>
+        <details class="viewer-log"><summary>试运行日志</summary><div class="log-toolbar"><span>Viewer 日志</span><div><label>显示 <select class="log-lines" data-log-kind="viewer"><option>50</option><option>100</option><option selected>200</option><option>500</option><option>1000</option><option>2000</option></select> 行</label><button type="button" class="text-button copy-log" data-copy-target="viewer-example-log">复制</button><button type="button" class="text-button clear-log" data-log-kind="viewer">清空</button></div></div><pre id="viewer-example-log">尚无日志</pre></details>
       </div>
     </section>
 
@@ -118,21 +120,27 @@
       <div class="section-intro"><div><h2>运行与算法参数</h2><p>保存后用于下一次 Actor / Learner 启动；运行中的进程不会热更新。</p></div><button class="primary" id="save-profile">保存参数</button></div>
       <form id="profile-form">
         <article class="panel form-section"><div class="form-heading"><span>01</span><div><h3>实验身份</h3><p>环境类型、任务名称和输出位置</p></div></div><div class="form-grid">
-          <label>配置名称<input data-field="name" /></label><label>环境类型<input data-field="env_type" /></label><label>Job name<input data-field="job_name" /></label><label>输出根目录<input data-field="output_root" /></label><label class="wide">离线数据集目录（可留空）<input data-field="dataset_root" placeholder="outputs/dataset/..." /></label>
+          <label>配置名称<input data-field="name" /></label><label>环境类型<input data-field="env_type" /></label><label>Job name<input data-field="job_name" /></label><label>输出根目录<input data-field="output_root" /></label>
         </div></article>
-        <article class="panel form-section"><div class="form-heading"><span>02</span><div><h3>训练预算</h3><p>更新规模、预热和优化频率</p></div></div><div class="form-grid four">
+        <article class="panel form-section"><div class="form-heading"><span>02</span><div><h3>数据与策略初始化</h3><p>展开下拉框时自动扫描 outputs；最新的有效项目默认置顶</p></div><button type="button" class="secondary asset-refresh" id="refresh-assets">重新扫描</button></div><div class="form-grid">
+          <label class="wide">Demo 数据集（由 Learner 加载示教 Buffer 与归一化统计）<select class="asset-select" data-field="dataset_root" data-asset-kind="datasets"><option value="">正在扫描…</option></select></label>
+          <label>Learner 策略 checkpoint（可选；不使用即冷启动）<select class="asset-select" data-field="learner_checkpoint" data-asset-kind="checkpoints"><option value="">正在扫描…</option></select></label>
+          <label>Actor 策略 checkpoint（可选；不使用即冷启动）<select class="asset-select" data-field="actor_checkpoint" data-asset-kind="checkpoints"><option value="">正在扫描…</option></select></label>
+          <small class="asset-status wide" id="asset-status">尚未扫描项目数据</small>
+        </div></article>
+        <article class="panel form-section"><div class="form-heading"><span>03</span><div><h3>训练预算</h3><p>更新规模、预热和优化频率</p></div></div><div class="form-grid four">
           <label>Seed<input type="number" data-field="seed" /></label><label>Batch size<input type="number" data-field="batch_size" /></label><label>Online steps<input type="number" data-field="online_steps" /></label><label>Warmup steps<input type="number" data-field="online_warmup_steps" /></label><label>Actor LR<input type="number" step="any" data-field="actor_lr" /></label><label>Policy update freq<input type="number" data-field="policy_update_freq" /></label><label>Actor update after<input type="number" data-field="actor_update_after" /></label><label>Save freq<input type="number" data-field="save_freq" /></label>
         </div></article>
-        <article class="panel form-section"><div class="form-heading"><span>03</span><div><h3>观测与网络</h3><p>视觉编码器、堆叠帧和设备</p></div></div><div class="form-grid four">
+        <article class="panel form-section"><div class="form-heading"><span>04</span><div><h3>观测与网络</h3><p>视觉编码器、堆叠帧和设备</p></div></div><div class="form-grid four">
           <label>设备<select data-field="device"><option>cuda</option><option>cpu</option><option>mps</option></select></label><label>图像尺寸<input type="number" data-field="image_size" /></label><label>堆叠帧<input type="number" data-field="frame_stack" /></label><label>视觉编码器<input data-field="vision_encoder" /></label><label class="check"><input type="checkbox" data-field="freeze_shared_encoder" />冻结共享编码器</label><label class="check"><input type="checkbox" data-field="viewer" />Actor 显示 Viewer</label><label>键盘干预<select data-field="teleop_mode"><option value="none">关闭</option><option value="keyboard">启用</option></select></label>
         </div></article>
-        <article class="panel form-section"><div class="form-heading"><span>04</span><div><h3>通信与监控</h3><p>仅允许 localhost，避免暴露控制服务</p></div></div><div class="form-grid four">
+        <article class="panel form-section"><div class="form-heading"><span>05</span><div><h3>通信与监控</h3><p>仅允许 localhost，避免暴露控制服务</p></div></div><div class="form-grid four">
           <label>Learner host<input data-field="learner_host" /></label><label>Learner port<input type="number" data-field="learner_port" /></label><label>Replay host<input data-field="replay_host" /></label><label>Replay port<input type="number" data-field="replay_port" /></label><label>Log freq<input type="number" data-field="log_freq" /></label>
         </div></article>
       </form>
     </section>
   </main>
   <div id="toast" class="toast"></div>
-  <script src="/static/console.js"></script>
+  <script src="/static/console.js?v=20260827-cold-start"></script>
 </body>
 </html>

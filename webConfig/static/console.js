@@ -4,6 +4,7 @@ var activeView = 'overview';
 var currentProfile = null;
 var refreshTimer = null;
 var viewerExamplesLoaded = false;
+var assetsRefreshPromise = null;
 
 function byId(id) { return document.getElementById(id); }
 
@@ -16,6 +17,54 @@ async function api(url, options) {
   var payload = text ? JSON.parse(text) : {};
   if (!response.ok) throw new Error(payload.error || ('HTTP ' + response.status));
   return payload;
+}
+
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  var textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  var copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('浏览器拒绝访问剪贴板');
+}
+
+async function copyLog(targetId) {
+  var target = byId(targetId);
+  if (!target) return;
+  try {
+    await copyText(target.textContent || '');
+    toast('日志已复制到剪贴板', 'success');
+  } catch (error) {
+    toast('复制失败：' + error.message, 'error');
+  }
+}
+
+function logLineCount(kind) {
+  var select = document.querySelector('.log-lines[data-log-kind="' + kind + '"]');
+  return select ? Number(select.value) || 200 : 200;
+}
+
+async function clearLog(kind) {
+  if (!window.confirm('确认清空 ' + kind.toUpperCase() + ' 日志文件？运行中的进程不会停止。')) return;
+  var url = kind === 'viewer'
+    ? '/api/console/example-run/log/clear'
+    : '/api/console/services/' + kind + '/log/clear';
+  try {
+    await api(url, { method: 'POST', body: '{}' });
+    if (kind === 'viewer') await refreshViewerRun();
+    else await refreshServices(true);
+    toast(kind.toUpperCase() + ' 日志已清空', 'success');
+  } catch (error) {
+    toast('清空失败：' + error.message, 'error');
+  }
 }
 
 function toast(message, type) {
@@ -147,7 +196,7 @@ async function refreshServices(withLogs) {
     renderServices(services);
     if (withLogs) {
       await Promise.all(['learner', 'actor'].map(async function (role) {
-        var result = await api('/api/console/services/' + role + '/log');
+        var result = await api('/api/console/services/' + role + '/log?lines=' + logLineCount(role));
         document.querySelector('[data-log="' + role + '"]').textContent = result.text || '尚无日志';
       }));
     }
@@ -163,8 +212,15 @@ async function serviceAction(role, action) {
   var verb = action === 'start' ? '启动' : '停止';
   if (!window.confirm('确认' + verb + ' ' + role.toUpperCase() + '？')) return;
   try {
+    if (action === 'start') {
+      currentProfile = await api('/api/console/profile', {
+        method: 'PUT',
+        body: JSON.stringify(collectProfile())
+      });
+      byId('profile-chip').textContent = currentProfile.name + ' · ' + currentProfile.device.toUpperCase();
+    }
     await api('/api/console/services/' + role + '/' + action, { method: 'POST', body: '{}' });
-    toast(role.toUpperCase() + ' 已' + verb, 'success');
+    toast(role.toUpperCase() + (action === 'start' ? ' 参数已保存并启动' : ' 已停止'), 'success');
     await refreshServices(true);
   } catch (error) { toast(error.message, 'error'); }
 }
@@ -182,6 +238,53 @@ async function loadProfile() {
     });
     byId('profile-chip').textContent = currentProfile.name + ' · ' + currentProfile.device.toUpperCase();
   } catch (error) { toast(error.message, 'error'); }
+}
+
+function populateAssetSelect(select, items) {
+  var initialized = select.dataset.assetsInitialized === 'true';
+  var selected = initialized
+    ? select.value
+    : ((currentProfile && currentProfile[select.dataset.field]) || '');
+  select.replaceChildren();
+  var empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = '不使用';
+  select.appendChild(empty);
+  items.forEach(function (item, index) {
+    var option = document.createElement('option');
+    option.value = item.path;
+    option.textContent = (index === 0 ? '最新 · ' : '') + item.label + ' · ' + item.modified_at;
+    select.appendChild(option);
+  });
+  var exists = Array.from(select.options).some(function (option) { return option.value === selected; });
+  if (!initialized && !selected && select.dataset.assetKind === 'datasets' && items.length) {
+    select.value = items[0].path;
+  } else if (exists) {
+    select.value = selected;
+  } else {
+    select.value = '';
+  }
+  select.dataset.assetsInitialized = 'true';
+}
+
+async function refreshAssets() {
+  if (assetsRefreshPromise) return assetsRefreshPromise;
+  assetsRefreshPromise = (async function () {
+    byId('asset-status').textContent = '正在扫描项目中的 Demo 与 checkpoint…';
+    try {
+      var result = await api('/api/console/assets');
+      document.querySelectorAll('.asset-select').forEach(function (select) {
+        populateAssetSelect(select, result[select.dataset.assetKind] || []);
+      });
+      byId('asset-status').textContent = '发现 ' + result.datasets.length + ' 个 Demo 根目录、' + result.checkpoints.length + ' 个策略 checkpoint；未保存前不会影响启动参数。';
+    } catch (error) {
+      byId('asset-status').textContent = '扫描失败：' + error.message;
+      toast(error.message, 'error');
+    } finally {
+      assetsRefreshPromise = null;
+    }
+  })();
+  return assetsRefreshPromise;
 }
 
 function collectProfile() {
@@ -245,7 +348,7 @@ async function refreshViewerRun() {
       viewerExamplesLoaded = true;
     }
     renderViewerRun(result.run);
-    var log = await api('/api/console/example-run/log');
+    var log = await api('/api/console/example-run/log?lines=' + logLineCount('viewer'));
     byId('viewer-example-log').textContent = log.text || '尚无日志';
   } catch (error) { toast(error.message, 'error'); }
 }
@@ -297,7 +400,29 @@ function bindEvents() {
   document.querySelectorAll('.preview-command').forEach(function (button) {
     button.onclick = function () { previewCommand(button.dataset.role); };
   });
+  document.querySelectorAll('.copy-log').forEach(function (button) {
+    button.onclick = function () { copyLog(button.dataset.copyTarget); };
+  });
+  document.querySelectorAll('.clear-log').forEach(function (button) {
+    button.onclick = function () { clearLog(button.dataset.logKind); };
+  });
+  document.querySelectorAll('.log-lines').forEach(function (select) {
+    var storageKey = 'web-console-log-lines-' + select.dataset.logKind;
+    var saved = window.localStorage.getItem(storageKey);
+    if (saved && Array.from(select.options).some(function (option) { return option.value === saved; })) {
+      select.value = saved;
+    }
+    select.onchange = function () {
+      window.localStorage.setItem(storageKey, select.value);
+      if (select.dataset.logKind === 'viewer') refreshViewerRun();
+      else refreshServices(true);
+    };
+  });
   byId('save-profile').onclick = saveProfile;
+  byId('refresh-assets').onclick = refreshAssets;
+  document.querySelectorAll('.asset-select').forEach(function (select) {
+    select.addEventListener('focus', refreshAssets);
+  });
   byId('start-viewer-example').onclick = startViewerExample;
   byId('stop-viewer-example').onclick = stopViewerExample;
   byId('refresh-all').onclick = async function () { await refreshSummary(); if (activeView === 'services') await refreshServices(true); };
@@ -305,7 +430,8 @@ function bindEvents() {
 
 async function initialize() {
   bindEvents();
-  await Promise.all([loadProfile(), refreshSummary()]);
+  await loadProfile();
+  await Promise.all([refreshAssets(), refreshSummary()]);
   refreshTimer = window.setInterval(function () {
     if (activeView === 'services') refreshServices(true);
     else if (activeView === 'buffer') refreshReplay();

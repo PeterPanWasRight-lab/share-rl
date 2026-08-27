@@ -35,6 +35,8 @@ DEFAULT_PROFILE: dict[str, Any] = {
     "job_name": "web-console-insertion",
     "output_root": "outputs/web-console/insertion",
     "dataset_root": "",
+    "learner_checkpoint": "",
+    "actor_checkpoint": "",
     "seed": 20260827,
     "device": "cuda",
     "batch_size": 256,
@@ -77,7 +79,15 @@ def validate_profile(payload: Any) -> dict[str, Any]:
         raise ValueError(f"unsupported profile fields: {', '.join(unknown)}")
     profile = copy.deepcopy(DEFAULT_PROFILE)
     profile.update(payload)
-    for name in ("name", "job_name", "output_root", "dataset_root", "vision_encoder"):
+    for name in (
+        "name",
+        "job_name",
+        "output_root",
+        "dataset_root",
+        "learner_checkpoint",
+        "actor_checkpoint",
+        "vision_encoder",
+    ):
         if not isinstance(profile[name], str):
             raise ValueError(f"{name} must be a string")
         profile[name] = profile[name].strip()
@@ -108,17 +118,88 @@ def validate_profile(payload: Any) -> dict[str, Any]:
     for name in ("learner_host", "replay_host"):
         if str(profile[name]) not in {"127.0.0.1", "localhost"}:
             raise ValueError(f"{name} is restricted to localhost")
+    for name in ("dataset_root", "learner_checkpoint", "actor_checkpoint"):
+        if profile[name]:
+            _resolve_project_path(profile[name], name)
     return profile
 
 
-def resolve_output_root(profile: dict[str, Any]) -> Path:
-    configured = Path(profile["output_root"])
+def _resolve_project_path(value: str, name: str) -> Path:
+    configured = Path(value)
     if configured.is_absolute():
-        raise ValueError("output_root must be relative to the repository")
+        raise ValueError(f"{name} must be relative to the repository")
     resolved = (REPO_ROOT / configured).resolve()
-    if REPO_ROOT not in resolved.parents:
-        raise ValueError("output_root must stay inside the repository")
+    if resolved != REPO_ROOT and REPO_ROOT not in resolved.parents:
+        raise ValueError(f"{name} must stay inside the repository")
     return resolved
+
+
+def resolve_output_root(profile: dict[str, Any]) -> Path:
+    return _resolve_project_path(profile["output_root"], "output_root")
+
+
+def _asset_record(path: Path, *, label: str, timestamp_path: Path) -> dict[str, Any]:
+    modified = timestamp_path.stat().st_mtime
+    return {
+        "path": path.relative_to(REPO_ROOT).as_posix(),
+        "label": label,
+        "modified_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(modified)),
+        "mtime": modified,
+    }
+
+
+def discover_project_assets() -> dict[str, list[dict[str, Any]]]:
+    """Find valid local demo roots and policy checkpoints, newest first."""
+    outputs = REPO_ROOT / "outputs"
+    if not outputs.exists():
+        return {"datasets": [], "checkpoints": []}
+
+    datasets: dict[Path, dict[str, Any]] = {}
+    for info_path in outputs.glob("**/meta/info.json"):
+        stats_path = info_path.with_name("stats.json")
+        if not stats_path.is_file():
+            continue
+        dataset_dir = info_path.parent.parent
+        # Online replay exports use <primitive>/dataset/meta and are not demos.
+        if dataset_dir.name == "dataset":
+            continue
+        if dataset_dir.parent.name == "offline-demos":
+            root = dataset_dir.parent.parent
+        else:
+            root = dataset_dir.parent
+        try:
+            record = _asset_record(
+                root,
+                label=f"{root.relative_to(REPO_ROOT).as_posix()} · {dataset_dir.name}",
+                timestamp_path=max((info_path, stats_path), key=lambda path: path.stat().st_mtime),
+            )
+        except (OSError, ValueError):
+            continue
+        previous = datasets.get(root)
+        if previous is None or record["mtime"] > previous["mtime"]:
+            datasets[root] = record
+
+    checkpoints: dict[Path, dict[str, Any]] = {}
+    for config_path in outputs.glob("**/checkpoints/*/pretrained_model/config.json"):
+        policy_path = config_path.parent
+        step_dir = policy_path.parent
+        if step_dir.name == "last":
+            continue
+        try:
+            relative = policy_path.relative_to(REPO_ROOT).as_posix()
+            record = _asset_record(
+                policy_path,
+                label=f"{relative} · step {step_dir.name}",
+                timestamp_path=config_path,
+            )
+        except (OSError, ValueError):
+            continue
+        checkpoints[policy_path] = record
+
+    return {
+        "datasets": sorted(datasets.values(), key=lambda item: item["mtime"], reverse=True),
+        "checkpoints": sorted(checkpoints.values(), key=lambda item: item["mtime"], reverse=True),
+    }
 
 
 def load_profile() -> dict[str, Any]:
@@ -142,7 +223,7 @@ def build_service_command(role: str, profile: dict[str, Any]) -> list[str]:
         raise ValueError(f"unknown service role: {role}")
     profile = validate_profile(profile)
     script = REPO_ROOT / "src" / "share" / "scripts" / f"{role}_server.py"
-    output_dir = resolve_output_root(profile) / role
+    output_dir = resolve_output_root(profile)
     command = [
         sys.executable,
         str(script),
@@ -173,16 +254,20 @@ def build_service_command(role: str, profile: dict[str, Any]) -> list[str]:
     ]
     if profile["vision_encoder"]:
         command.append(f"--env.policy_vision_encoder_name={profile['vision_encoder']}")
-    if profile["dataset_root"]:
-        dataset_root = Path(profile["dataset_root"]).expanduser()
-        if not dataset_root.is_absolute():
-            dataset_root = REPO_ROOT / dataset_root
-        dataset_root = dataset_root.resolve()
+    if role == "learner" and profile["dataset_root"]:
+        dataset_root = _resolve_project_path(profile["dataset_root"], "dataset_root")
         command.extend([
-            "--dataset.type=dataset",
             "--dataset.repo_id=local/web-console",
             f"--dataset.root={dataset_root}",
         ])
+    checkpoint = profile[f"{role}_checkpoint"]
+    if checkpoint:
+        checkpoint_path = _resolve_project_path(checkpoint, f"{role}_checkpoint")
+        if not (checkpoint_path / "config.json").is_file():
+            raise ValueError(
+                f"{role}_checkpoint must point to a pretrained_model directory containing config.json"
+            )
+        command.append(f"--policy.path={checkpoint_path}")
     return command
 
 
@@ -290,7 +375,17 @@ class ServiceManager:
         path = Path(status["log_path"])
         if not path.exists():
             return ""
-        return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-max(1, min(lines, 500)):])
+        return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-max(1, min(lines, 5000)):])
+
+    def clear_log(self, role: str) -> None:
+        """Truncate one console-owned service log without stopping its process."""
+        with self._lock:
+            if role not in SERVICE_ROLES:
+                raise ValueError(f"unknown service role: {role}")
+            record = self._records.get(role)
+            if record is None:
+                return
+            Path(record["log_path"]).write_text("", encoding="utf-8")
 
 
 def fetch_replay_metrics(profile: dict[str, Any]) -> dict[str, Any]:
@@ -437,9 +532,16 @@ class ViewerExampleRunner:
             return ""
         return "\n".join(
             path.read_text(encoding="utf-8", errors="replace").splitlines()[
-                -max(1, min(lines, 500)):
+                -max(1, min(lines, 5000)):
             ]
         )
+
+    def clear_log(self) -> None:
+        """Truncate the current viewer log without stopping its process."""
+        with self._lock:
+            if self._record is None:
+                return
+            Path(self._record["log_path"]).write_text("", encoding="utf-8")
 
 
 service_manager = ServiceManager()

@@ -21,9 +21,10 @@ cd webConfig
 ## 控制台功能
 
 - “实验总览”集中显示服务状态、状态机配置数量以及 Buffer 关键指标。
-- “Actor / Learner”按照 Learner → Actor 的顺序启动服务，支持日志尾部查看和实际命令预览。
+- “Actor / Learner”按照 Learner → Actor 的顺序启动服务，启动前自动保存当前算法表单，并支持设置日志行数、复制/清空日志和实际命令预览。
 - “Replay Buffer”从 Learner 的本地 dashboard API 读取 online/offline transition、轨迹、成功、失败和干预统计。
 - “算法参数”保存白名单字段到 `runtime_profile.json`，只影响之后由控制台启动的进程。
+- Demo 与 checkpoint 下拉框在打开时重新扫描 `outputs/`，只列出带 `meta/info.json` 和 `meta/stats.json` 的示教根目录，以及带 `pretrained_model/config.json` 的策略 checkpoint，并按修改时间从新到旧排列。
 - “MP-Net 状态机”嵌入完整的图形编辑器；配置仍保存在 `webConfig/configs/`，可由运行时加载。
 - 状态机页的“保存并运行 Viewer”会先保存当前 JSON，再调用白名单中的 MuJoCo 示例；首个已验证映射是 `pick_insert_example` 使用 `examples/demo_pick_insert.py --viewer --config=...`。
 
@@ -32,6 +33,10 @@ cd webConfig
 Viewer 试运行同样使用参数数组而非 shell，只允许后端登记的示例。为避免争用 MuJoCo/机器人资源，Actor 或 Learner 运行期间不能启动状态机试运行。页面提供 PID、退出状态、日志和进程组停止按钮。
 
 服务状态只跟踪当前 Web 服务器进程启动的子进程。关闭 Web 服务器后重新打开页面，不会接管其他终端手工启动的 Actor/Learner。
+
+Demo 目录只传给 Learner，用于初始化离线示教 Buffer 并补充归一化统计。`learner_checkpoint` 和 `actor_checkpoint` 是相互独立的策略热启动路径，都会转换为 `--policy.path=<pretrained_model>`；它们不恢复优化器、Replay Buffer 或训练步数，因此不等同于完整 resume。通常应为两端选择同一个 checkpoint，Actor 随后会继续接收 Learner 发布的参数。Actor 与 Learner 使用同一个实验输出根目录，primitive 自己的 checkpoint 仍写入其子目录。
+
+Checkpoint 下拉框默认允许选择“不使用”，表示从当前环境配置冷启动策略；重新扫描资产不会覆盖这个显式选择。Demo 在首次打开空配置时仍默认选择最新的有效数据集。
 
 ## 状态机编辑器
 
