@@ -1,0 +1,1661 @@
+{
+  "start_primitive": "move_above_A",
+  "reset_primitive": "move_above_A",
+  "primitives": {
+    "move_above_A": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.25,
+          0.3,
+          0.28,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Move above the peg at A.",
+      "is_terminal": false,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 0.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    },
+    "open_gripper_A": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.25,
+          0.3,
+          0.28,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Open the gripper above the peg.",
+      "is_terminal": false,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 0.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    },
+    "descend_A": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.25,
+          0.3,
+          0.16,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Descend to grasp the peg at A.",
+      "is_terminal": false,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 0.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    },
+    "close_gripper": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.25,
+          0.3,
+          0.16,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Close the gripper around the peg.",
+      "is_terminal": false,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 1.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    },
+    "lift_A": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.25,
+          0.3,
+          0.28,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Lift the grasped peg off the table.",
+      "is_terminal": false,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 1.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    },
+    "move_above_B": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.134,
+          0.492,
+          0.28,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Move above the hole at B.",
+      "is_terminal": false,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 1.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    },
+    "settle_B": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.134,
+          0.492,
+          0.28,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Hold above the hole to let the peg settle.",
+      "is_terminal": false,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 1.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    },
+    "pre_insert_B": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.135,
+          0.486,
+          0.19,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Align the peg above the hole.",
+      "is_terminal": false,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 1.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    },
+    "insert_B": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.135,
+          0.486,
+          0.17,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Insert the peg into the hole.",
+      "is_terminal": false,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 1.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    },
+    "open_gripper_B": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.135,
+          0.486,
+          0.17,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Release the peg inside the hole.",
+      "is_terminal": false,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 0.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    },
+    "retract_B": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.134,
+          0.492,
+          0.28,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Retract the empty gripper from B.",
+      "is_terminal": false,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 0.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    },
+    "done": {
+      "type": "static",
+      "task_frame": {
+        "target": [
+          -0.134,
+          0.492,
+          0.28,
+          3.141592653589793,
+          0.0,
+          1.5707963267948966
+        ],
+        "space": 1,
+        "policy_mode": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "control_mode": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "min_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "max_pose": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "controller_overrides": null
+      },
+      "policy_overwrites": {},
+      "notes": "Terminal hold.",
+      "is_terminal": true,
+      "target_pose_info_key": "primitive_target_pose",
+      "processor": {
+        "control_time_s": 10.0,
+        "fps": 30.0,
+        "image_preprocessing": null,
+        "events": {
+          "key_mapping": {},
+          "pulse_events": [],
+          "foot_switch_mapping": {}
+        },
+        "hooks": {
+          "time_env_processor": false,
+          "time_action_processor": false,
+          "log_every": 10
+        },
+        "observation": {
+          "add_joint_position_to_observation": true,
+          "add_joint_velocity_to_observation": false,
+          "add_current_to_observation": false,
+          "add_ee_pos_to_observation": true,
+          "add_ee_velocity_to_observation": true,
+          "add_ee_wrench_to_observation": true,
+          "ee_pos_axes": [
+            "x.ee_pos",
+            "y.ee_pos",
+            "z.ee_pos",
+            "rx.ee_pos",
+            "ry.ee_pos",
+            "rz.ee_pos"
+          ],
+          "ee_velocity_axes": [
+            "x.ee_vel",
+            "y.ee_vel",
+            "z.ee_vel",
+            "rx.ee_vel",
+            "ry.ee_vel",
+            "rz.ee_vel"
+          ],
+          "ee_wrench_axes": [
+            "x.ee_wrench",
+            "y.ee_wrench",
+            "z.ee_wrench",
+            "rx.ee_wrench",
+            "ry.ee_wrench",
+            "rz.ee_wrench"
+          ],
+          "stack_frames": 0,
+          "relative_ee_pos": false
+        },
+        "gripper": {
+          "enable": false,
+          "discretize": false,
+          "threshold": 0.5,
+          "mode": "state",
+          "max_pos": 1.0,
+          "min_pos": 0.0,
+          "static_pos": 0.0,
+          "penalty": null
+        },
+        "kinematics": {
+          "enable": false,
+          "use_virtual_reference": true,
+          "urdf_path": null,
+          "target_frame_name": null,
+          "end_effector_bounds": null,
+          "end_effector_step_sizes": null
+        }
+      }
+    }
+  },
+  "transitions": [
+    {
+      "type": "on_target_pose_reached",
+      "source": "move_above_A",
+      "target": "open_gripper_A",
+      "additional_reward": 0.0,
+      "reason": null,
+      "robot_name": "main",
+      "axes": [
+        "x",
+        "y",
+        "z"
+      ],
+      "tolerance": 0.01,
+      "target_key": "primitive_target_pose"
+    },
+    {
+      "type": "on_time_limit",
+      "source": "open_gripper_A",
+      "target": "descend_A",
+      "additional_reward": 0.0,
+      "reason": null,
+      "max_steps": 30,
+      "step_key": "step"
+    },
+    {
+      "type": "on_target_pose_reached",
+      "source": "descend_A",
+      "target": "close_gripper",
+      "additional_reward": 0.0,
+      "reason": null,
+      "robot_name": "main",
+      "axes": [
+        "z"
+      ],
+      "tolerance": 0.01,
+      "target_key": "primitive_target_pose"
+    },
+    {
+      "type": "on_time_limit",
+      "source": "close_gripper",
+      "target": "lift_A",
+      "additional_reward": 0.0,
+      "reason": null,
+      "max_steps": 30,
+      "step_key": "step"
+    },
+    {
+      "type": "on_target_pose_reached",
+      "source": "lift_A",
+      "target": "move_above_B",
+      "additional_reward": 0.0,
+      "reason": null,
+      "robot_name": "main",
+      "axes": [
+        "x",
+        "y",
+        "z"
+      ],
+      "tolerance": 0.01,
+      "target_key": "primitive_target_pose"
+    },
+    {
+      "type": "on_target_pose_reached",
+      "source": "move_above_B",
+      "target": "settle_B",
+      "additional_reward": 0.0,
+      "reason": null,
+      "robot_name": "main",
+      "axes": [
+        "x",
+        "y",
+        "z"
+      ],
+      "tolerance": 0.01,
+      "target_key": "primitive_target_pose"
+    },
+    {
+      "type": "on_time_limit",
+      "source": "settle_B",
+      "target": "pre_insert_B",
+      "additional_reward": 0.0,
+      "reason": null,
+      "max_steps": 30,
+      "step_key": "step"
+    },
+    {
+      "type": "on_target_pose_reached",
+      "source": "pre_insert_B",
+      "target": "insert_B",
+      "additional_reward": 0.0,
+      "reason": null,
+      "robot_name": "main",
+      "axes": [
+        "z"
+      ],
+      "tolerance": 0.01,
+      "target_key": "primitive_target_pose"
+    },
+    {
+      "type": "on_time_limit",
+      "source": "insert_B",
+      "target": "open_gripper_B",
+      "additional_reward": 0.0,
+      "reason": null,
+      "max_steps": 60,
+      "step_key": "step"
+    },
+    {
+      "type": "on_time_limit",
+      "source": "open_gripper_B",
+      "target": "retract_B",
+      "additional_reward": 0.0,
+      "reason": null,
+      "max_steps": 45,
+      "step_key": "step"
+    },
+    {
+      "type": "on_target_pose_reached",
+      "source": "retract_B",
+      "target": "done",
+      "additional_reward": 0.0,
+      "reason": null,
+      "robot_name": "main",
+      "axes": [
+        "x",
+        "y",
+        "z"
+      ],
+      "tolerance": 0.01,
+      "target_key": "primitive_target_pose"
+    },
+    {
+      "type": "on_success",
+      "source": "done",
+      "target": "move_above_A",
+      "additional_reward": 1.0,
+      "reason": null,
+      "event_key": "",
+      "success_key": "primitive_complete"
+    }
+  ],
+  "fps": 30
+}
