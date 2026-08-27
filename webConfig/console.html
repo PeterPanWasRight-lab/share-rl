@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SHaRe-RL 实验控制台</title>
+  <link rel="stylesheet" href="/static/console.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">S</div>
+      <div><strong>SHaRe-RL</strong><span>实验控制台</span></div>
+    </div>
+    <nav id="nav">
+      <button class="nav-item active" data-view="overview"><span>⌂</span>总览</button>
+      <button class="nav-item" data-view="services"><span>▶</span>Actor / Learner</button>
+      <button class="nav-item" data-view="buffer"><span>◫</span>Replay Buffer</button>
+      <button class="nav-item" data-view="state-machine"><span>⌘</span>状态机</button>
+      <button class="nav-item" data-view="algorithm"><span>⚙</span>算法参数</button>
+    </nav>
+    <div class="sidebar-foot">
+      <span class="connection-dot" id="server-dot"></span>
+      <div><strong id="server-label">正在连接</strong><span>仅限本机访问</span></div>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <header class="topbar">
+      <div><p class="eyebrow">LOCAL WORKSPACE</p><h1 id="page-title">实验总览</h1></div>
+      <div class="top-actions">
+        <span class="profile-chip" id="profile-chip">加载配置…</span>
+        <button class="icon-button" id="refresh-all" title="刷新">↻</button>
+      </div>
+    </header>
+
+    <section class="view active" id="view-overview">
+      <article class="hero">
+        <div>
+          <p class="eyebrow">ROBOT LEARNING WORKSPACE</p>
+          <h2>从配置到训练，集中在一个页面。</h2>
+          <p>管理 Actor / Learner、观察 Replay Buffer、编辑 MP-Net 状态机，并在启动前核对算法参数。</p>
+        </div>
+        <div class="hero-actions">
+          <button class="primary" data-jump="services">打开服务控制</button>
+          <button class="secondary" data-jump="state-machine">编辑状态机</button>
+        </div>
+      </article>
+
+      <div class="stats-grid">
+        <article class="stat"><span>服务</span><strong id="stat-services">0 / 2</strong><small>正在运行</small></article>
+        <article class="stat"><span>状态机配置</span><strong id="stat-configs">—</strong><small>可用 JSON</small></article>
+        <article class="stat"><span>Online Buffer</span><strong id="stat-online">—</strong><small>Transitions</small></article>
+        <article class="stat"><span>优化步数</span><strong id="stat-updates">—</strong><small>Optimization</small></article>
+      </div>
+
+      <div class="dashboard-grid">
+        <article class="panel service-overview">
+          <div class="panel-head"><div><p class="eyebrow">RUNTIME</p><h3>训练服务</h3></div><button class="text-button" data-jump="services">详细控制 →</button></div>
+          <div id="overview-services"></div>
+        </article>
+        <article class="panel buffer-overview">
+          <div class="panel-head"><div><p class="eyebrow">REPLAY</p><h3>Buffer 概况</h3></div><span class="badge" id="replay-badge">等待 Learner</span></div>
+          <div id="overview-buffer" class="empty-state">Learner 启动后，这里会每秒展示在线与离线数据。</div>
+        </article>
+      </div>
+
+      <article class="panel workflow">
+        <div class="panel-head"><div><p class="eyebrow">RECOMMENDED FLOW</p><h3>推荐操作顺序</h3></div></div>
+        <div class="flow-row">
+          <button data-jump="state-machine"><b>01</b><span>配置状态机<small>原语、转移和终止条件</small></span></button>
+          <i>→</i><button data-jump="algorithm"><b>02</b><span>核对参数<small>环境、网络和训练预算</small></span></button>
+          <i>→</i><button data-jump="services"><b>03</b><span>启动 Learner<small>先建立参数与 Buffer 服务</small></span></button>
+          <i>→</i><button data-jump="services"><b>04</b><span>启动 Actor<small>开始交互与数据采集</small></span></button>
+        </div>
+      </article>
+    </section>
+
+    <section class="view" id="view-services">
+      <div class="notice"><strong>启动顺序：</strong>先启动 Learner，确认状态为运行中，再启动 Actor。停止时建议先 Actor、后 Learner。</div>
+      <div class="service-grid">
+        <article class="panel service-card" data-role="learner">
+          <div class="service-title"><div class="service-icon learner">L</div><div><h3>Learner</h3><p>优化策略、维护 Buffer、发布参数</p></div><span class="status-pill">已停止</span></div>
+          <dl><div><dt>PID</dt><dd data-value="pid">—</dd></div><div><dt>运行时间</dt><dd data-value="uptime">—</dd></div><div><dt>退出码</dt><dd data-value="exit">—</dd></div></dl>
+          <div class="button-row"><button class="primary start-service" data-role="learner">启动 Learner</button><button class="danger stop-service" data-role="learner">停止</button></div>
+          <pre class="log-box" data-log="learner">尚无日志</pre>
+        </article>
+        <article class="panel service-card" data-role="actor">
+          <div class="service-title"><div class="service-icon actor">A</div><div><h3>Actor</h3><p>环境交互、推理、发送 transition</p></div><span class="status-pill">已停止</span></div>
+          <dl><div><dt>PID</dt><dd data-value="pid">—</dd></div><div><dt>运行时间</dt><dd data-value="uptime">—</dd></div><div><dt>退出码</dt><dd data-value="exit">—</dd></div></dl>
+          <div class="button-row"><button class="primary start-service" data-role="actor">启动 Actor</button><button class="danger stop-service" data-role="actor">停止</button></div>
+          <pre class="log-box" data-log="actor">尚无日志</pre>
+        </article>
+      </div>
+      <article class="panel command-panel"><div class="panel-head"><div><p class="eyebrow">COMMAND PREVIEW</p><h3>实际启动参数</h3></div><div><button class="text-button preview-command" data-role="learner">Learner</button><button class="text-button preview-command" data-role="actor">Actor</button></div></div><pre id="command-preview">选择服务查看白名单生成的 argv。</pre></article>
+    </section>
+
+    <section class="view" id="view-buffer">
+      <div class="section-intro"><div><h2>Replay Buffer</h2><p>直接读取 Learner 内存指标，不创建额外数据副本。</p></div><span class="badge" id="buffer-connection">未连接</span></div>
+      <div id="buffer-grid" class="buffer-grid"><article class="panel empty-state">Learner 的 Replay Dashboard 可用后，这里会自动刷新。</article></div>
+    </section>
+
+    <section class="view editor-view" id="view-state-machine">
+      <article class="panel viewer-runner">
+        <div class="viewer-copy"><p class="eyebrow">MUJOCO DRY RUN</p><h3>保存并测试当前状态机</h3><p>使用编辑器中的当前 JSON，后台启动对应的 examples 脚本并强制打开 Viewer。</p></div>
+        <label>示例<select id="viewer-example"></select></label>
+        <label>最大步数<input id="viewer-steps" type="number" min="1" max="100000" value="2000" /></label>
+        <div class="viewer-run-state"><span class="status-pill" id="viewer-status">已停止</span><small id="viewer-config">尚未选择配置</small></div>
+        <div class="button-row"><button class="primary" id="start-viewer-example">保存并运行 Viewer</button><button class="danger" id="stop-viewer-example" disabled>停止</button></div>
+      </article>
+      <div class="editor-shell">
+        <iframe id="editor-frame" title="MP-Net 状态机编辑器" src="/editor"></iframe>
+        <details class="viewer-log"><summary>试运行日志</summary><pre id="viewer-example-log">尚无日志</pre></details>
+      </div>
+    </section>
+
+    <section class="view" id="view-algorithm">
+      <div class="section-intro"><div><h2>运行与算法参数</h2><p>保存后用于下一次 Actor / Learner 启动；运行中的进程不会热更新。</p></div><button class="primary" id="save-profile">保存参数</button></div>
+      <form id="profile-form">
+        <article class="panel form-section"><div class="form-heading"><span>01</span><div><h3>实验身份</h3><p>环境类型、任务名称和输出位置</p></div></div><div class="form-grid">
+          <label>配置名称<input data-field="name" /></label><label>环境类型<input data-field="env_type" /></label><label>Job name<input data-field="job_name" /></label><label>输出根目录<input data-field="output_root" /></label><label class="wide">离线数据集目录（可留空）<input data-field="dataset_root" placeholder="outputs/dataset/..." /></label>
+        </div></article>
+        <article class="panel form-section"><div class="form-heading"><span>02</span><div><h3>训练预算</h3><p>更新规模、预热和优化频率</p></div></div><div class="form-grid four">
+          <label>Seed<input type="number" data-field="seed" /></label><label>Batch size<input type="number" data-field="batch_size" /></label><label>Online steps<input type="number" data-field="online_steps" /></label><label>Warmup steps<input type="number" data-field="online_warmup_steps" /></label><label>Actor LR<input type="number" step="any" data-field="actor_lr" /></label><label>Policy update freq<input type="number" data-field="policy_update_freq" /></label><label>Actor update after<input type="number" data-field="actor_update_after" /></label><label>Save freq<input type="number" data-field="save_freq" /></label>
+        </div></article>
+        <article class="panel form-section"><div class="form-heading"><span>03</span><div><h3>观测与网络</h3><p>视觉编码器、堆叠帧和设备</p></div></div><div class="form-grid four">
+          <label>设备<select data-field="device"><option>cuda</option><option>cpu</option><option>mps</option></select></label><label>图像尺寸<input type="number" data-field="image_size" /></label><label>堆叠帧<input type="number" data-field="frame_stack" /></label><label>视觉编码器<input data-field="vision_encoder" /></label><label class="check"><input type="checkbox" data-field="freeze_shared_encoder" />冻结共享编码器</label><label class="check"><input type="checkbox" data-field="viewer" />Actor 显示 Viewer</label><label>键盘干预<select data-field="teleop_mode"><option value="none">关闭</option><option value="keyboard">启用</option></select></label>
+        </div></article>
+        <article class="panel form-section"><div class="form-heading"><span>04</span><div><h3>通信与监控</h3><p>仅允许 localhost，避免暴露控制服务</p></div></div><div class="form-grid four">
+          <label>Learner host<input data-field="learner_host" /></label><label>Learner port<input type="number" data-field="learner_port" /></label><label>Replay host<input data-field="replay_host" /></label><label>Replay port<input type="number" data-field="replay_port" /></label><label>Log freq<input type="number" data-field="log_freq" /></label>
+        </div></article>
+      </form>
+    </section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script src="/static/console.js"></script>
+</body>
+</html>

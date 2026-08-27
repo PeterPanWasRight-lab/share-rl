@@ -287,19 +287,43 @@ function showEdgeDetail(transition) {
   meta.className = 'detail-meta';
   meta.textContent = transition.source + ' → ' + transition.target + '\n' + transition.condition_summary;
   panel.appendChild(meta);
-  var parameters = document.createElement('textarea');
-  parameters.rows = 14;
-  parameters.value = JSON.stringify(transition.parameters || {}, null, 2);
-  panel.appendChild(labeledInput('参数（JSON）', parameters));
+
+  var source = document.createElement('select');
+  var target = document.createElement('select');
+  fillPrimitiveSelect(source);
+  fillPrimitiveSelect(target);
+  source.value = transition.source;
+  target.value = transition.target;
+  panel.appendChild(labeledInput('起始原语', source));
+  panel.appendChild(labeledInput('目标原语', target));
+
+  var type = document.createElement('select');
+  Object.keys(transitionTypeMeta).forEach(function (name) {
+    type.appendChild(option(name, name));
+  });
+  type.value = transition.type;
+  panel.appendChild(labeledInput('转移类型', type));
+
+  var help = document.createElement('p');
+  help.className = 'form-help';
+  panel.appendChild(help);
+  var parameters = document.createElement('div');
+  parameters.className = 'transition-parameter-fields';
+  panel.appendChild(parameters);
+  renderTransitionParameterFields(parameters, type.value, transition.parameters || {}, help);
+  type.onchange = function () {
+    renderTransitionParameterFields(parameters, type.value, {}, help);
+  };
+
   var actions = document.createElement('div');
   actions.className = 'detail-actions';
   actions.append(
-    button('保存参数', 'btn-primary', async function () {
-      var parsed;
-      try { parsed = JSON.parse(parameters.value); } catch (error) { showToast('参数不是合法 JSON：' + error.message, 'error'); return; }
-      var rawTransition = currentRaw.transitions[transition.index];
-      var common = { source: rawTransition.source, target: rawTransition.target, type: rawTransition.type };
-      currentRaw.transitions[transition.index] = Object.assign(common, parsed);
+    button('保存转移', 'btn-primary', async function () {
+      currentRaw.transitions[transition.index] = Object.assign({
+        source: source.value,
+        target: target.value,
+        type: type.value
+      }, collectTransitionParameters(parameters));
       await saveCurrentConfig();
     }),
     button('删除转移', 'btn-danger', function () { deleteTransition(transition.index); })
@@ -505,9 +529,52 @@ function updateTransitionParams() {
   });
 }
 
-function collectTransitionParameters() {
+function transitionAxesChoice(value) {
+  if (value === null || value === undefined) return 'default';
+  var serialized = JSON.stringify(value);
+  var known = {
+    '["x","y","z"]': 'xyz',
+    '["x","y"]': 'xy',
+    '["z"]': 'z',
+    '["x","y","z","wx","wy","wz"]': 'all'
+  };
+  return known[serialized] || serialized;
+}
+
+function setTransitionFieldValue(input, name, value) {
+  if (value === undefined) return;
+  var selected = name === 'axes' ? transitionAxesChoice(value) : value;
+  var serialized = selected === null || selected === undefined ? '' : String(selected);
+  if (input.tagName === 'SELECT' && !Array.from(input.options).some(function (item) {
+    return item.value === serialized;
+  })) {
+    input.appendChild(option(serialized, '当前自定义值：' + serialized));
+  }
+  input.value = serialized;
+}
+
+function renderTransitionParameterFields(container, type, currentValues, helpElement) {
+  var metadata = transitionTypeMeta[type] || { fields: {} };
+  container.replaceChildren();
+  helpElement.textContent = metadata.doc || '';
+  var fieldNames = Object.keys(metadata.fields || {});
+  if (!fieldNames.length) {
+    var empty = document.createElement('p');
+    empty.className = 'empty-parameters';
+    empty.textContent = '此转移类型不需要额外参数。';
+    container.appendChild(empty);
+    return;
+  }
+  fieldNames.forEach(function (name) {
+    var input = transitionFieldInput(name, metadata.fields[name]);
+    setTransitionFieldValue(input, name, currentValues[name]);
+    container.appendChild(labeledInput(TRANSITION_FIELD_LABELS[name] || name, input));
+  });
+}
+
+function collectTransitionParameters(container) {
   var parameters = {};
-  byId('modal-trans-params').querySelectorAll('[data-parameter]').forEach(function (input) {
+  (container || byId('modal-trans-params')).querySelectorAll('[data-parameter]').forEach(function (input) {
     var name = input.dataset.parameter;
     var value = input.value;
     if (name === 'axes') {
@@ -518,7 +585,9 @@ function collectTransitionParameters() {
         z: ['z'],
         all: ['x', 'y', 'z', 'wx', 'wy', 'wz']
       };
-      parameters[name] = axesByChoice[value];
+      parameters[name] = Object.prototype.hasOwnProperty.call(axesByChoice, value)
+        ? axesByChoice[value]
+        : JSON.parse(value);
       return;
     }
     if (value === '' && input.dataset.nullable === 'true') {

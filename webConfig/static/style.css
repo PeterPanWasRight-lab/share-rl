@@ -336,6 +336,7 @@ body {
   margin-bottom: 12px;
 }
 .editor-field > span { display: block; margin-bottom: 5px; }
+.editor-field select,
 .editor-field input[type="text"],
 .editor-field input[type="number"],
 .editor-field textarea {

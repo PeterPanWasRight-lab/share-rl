@@ -2,33 +2,62 @@
 
 Runs the deterministic 10-step pick-and-insert graph on the dedicated
 ``pick_insert`` MuJoCo scene (peg free at A, hole at B). Set ``--viewer`` to
-watch the rollout in the MuJoCo viewer.
+watch the rollout in the MuJoCo viewer. ``--config`` overlays an MP-Net JSON
+saved by WebConfig onto the example's MuJoCo robot and camera setup.
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import torch
 from lerobot.processor import TransitionKey
 
 from experiments.envs.pick_insert.ur5e_pick_insert import UR5ePickInsertEnvConfig
+from share.envs.manipulation_primitive_net.config_manipulation_primitive_net import (
+    ManipulationPrimitiveNetConfig,
+)
 from share.envs.manipulation_primitive_net.env_manipulation_primitive_net import (
     ManipulationPrimitiveNet,
 )
-
 _REPO_ROOT = Path(__file__).parent.parent
+if str(_REPO_ROOT / "webConfig") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "webConfig"))
+
+from mpnet_adapter import load_flat_mpnet  # noqa: E402
 
 
-def run_demo(steps: int = 2000, *, viewer: bool = False) -> None:
+def build_demo_config(
+    *, viewer: bool = False, config_path: str | Path | None = None
+) -> UR5ePickInsertEnvConfig:
+    """Build the MuJoCo runtime and optionally overlay an edited MP-Net graph."""
+    edited = load_flat_mpnet(config_path) if config_path is not None else None
+    fps = edited.fps if edited is not None else 30
     net_cfg = UR5ePickInsertEnvConfig(
-        fps=30,
+        fps=fps,
         poses_file=str(
             _REPO_ROOT / "src" / "experiments" / "envs" / "pick_insert" / "poses.json"
         ),
         viewer=viewer,
     )
+    if edited is not None:
+        net_cfg.start_primitive = edited.start_primitive
+        net_cfg.reset_primitive = edited.reset_primitive
+        net_cfg.primitives = edited.primitives
+        net_cfg.transitions = edited.transitions
+        ManipulationPrimitiveNetConfig.__post_init__(net_cfg)
+    return net_cfg
+
+
+def run_demo(
+    steps: int = 2000,
+    *,
+    viewer: bool = False,
+    config_path: str | Path | None = None,
+) -> None:
+    net_cfg = build_demo_config(viewer=viewer, config_path=config_path)
     net = ManipulationPrimitiveNet(net_cfg)
     transition = net.reset()
     print(f"start -> {net.active_primitive}")
@@ -86,5 +115,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--viewer", action="store_true", help="open the MuJoCo viewer"
     )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="WebConfig MP-Net JSON to run on the pick-insert MuJoCo setup",
+    )
     args = parser.parse_args()
-    run_demo(steps=args.steps, viewer=args.viewer)
+    run_demo(steps=args.steps, viewer=args.viewer, config_path=args.config)

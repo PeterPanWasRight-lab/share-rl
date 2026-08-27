@@ -16,13 +16,22 @@ from flask import Flask, jsonify, request, send_from_directory
 THIS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = THIS_DIR.parent
 SRC_DIR = REPO_ROOT / "src"
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from console_runtime import (  # noqa: E402
+    build_service_command,
+    example_runner,
+    fetch_replay_metrics,
+    load_profile,
+    save_profile,
+    service_manager,
+)
+from mpnet_adapter import decode_flat_mpnet, encode_flat_mpnet  # noqa: E402
 from share.workspace.mpnet import (  # noqa: E402
     TRANSITION_TYPES,
-    _decode_mpnet,
-    _encode_mpnet,
     apply_edit,
     create_template_mpnet,
     summarize_mpnet_debug,
@@ -74,9 +83,7 @@ def _config_path(name: str) -> Path:
 
 
 def _decode(payload: Any):
-    if not isinstance(payload, dict):
-        raise ValueError("请求体必须是 JSON 对象")
-    return validate_mpnet_config(_decode_mpnet(payload))
+    return decode_flat_mpnet(payload)
 
 
 def _load(path: Path):
@@ -86,7 +93,7 @@ def _load(path: Path):
 def _save(config, path: Path) -> None:
     """Validate and atomically persist the browser serialization format."""
     validate_mpnet_config(config)
-    payload = _json_safe(_encode_mpnet(config))
+    payload = _json_safe(encode_flat_mpnet(config))
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
@@ -100,7 +107,7 @@ def _response(config, name: str):
         {
             "name": name,
             "summary": _json_safe(summarize_mpnet_debug(config)),
-            "raw": _json_safe(_encode_mpnet(config)),
+            "raw": _json_safe(encode_flat_mpnet(config)),
         }
     )
 
@@ -117,12 +124,145 @@ def _method_not_allowed(_error):
 
 @app.route("/")
 def index():
+    return send_from_directory(THIS_DIR, "console.html")
+
+
+@app.route("/editor")
+def editor():
     return send_from_directory(THIS_DIR, "index.html")
 
 
 @app.get("/api/health")
 def health():
     return jsonify({"ok": True})
+
+
+@app.get("/api/console/summary")
+def console_summary():
+    profile = load_profile()
+    return jsonify({
+        "project": REPO_ROOT.name,
+        "project_root": str(REPO_ROOT),
+        "config_count": len(list(CONFIGS_DIR.glob("*.json"))),
+        "profile": profile,
+        "services": service_manager.status(),
+        "example_run": example_runner.status(),
+        "replay": fetch_replay_metrics(profile),
+    })
+
+
+@app.get("/api/console/profile")
+def get_console_profile():
+    return jsonify(load_profile())
+
+
+@app.put("/api/console/profile")
+def put_console_profile():
+    if not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 415
+    try:
+        return jsonify(save_profile(request.get_json(silent=True)))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/console/services")
+def console_services():
+    return jsonify(service_manager.status())
+
+
+@app.get("/api/console/services/<role>/command")
+def console_service_command(role: str):
+    try:
+        return jsonify({"role": role, "argv": build_service_command(role, load_profile())})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/console/services/<role>/start")
+def start_console_service(role: str):
+    if not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 415
+    try:
+        if example_runner.status()["state"] == "running":
+            raise ValueError("stop the viewer example before starting Actor or Learner")
+        return jsonify(service_manager.start(role, load_profile())), 201
+    except (OSError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/console/services/<role>/stop")
+def stop_console_service(role: str):
+    if not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 415
+    try:
+        return jsonify(service_manager.stop(role))
+    except (OSError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/console/services/<role>/log")
+def console_service_log(role: str):
+    try:
+        return jsonify({"role": role, "text": service_manager.log_tail(role)})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/console/replay")
+def console_replay():
+    return jsonify(fetch_replay_metrics(load_profile()))
+
+
+@app.get("/api/console/examples")
+def console_examples():
+    return jsonify({"examples": example_runner.examples(), "run": example_runner.status()})
+
+
+@app.post("/api/console/example-run/start")
+def start_console_example():
+    if not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 415
+    try:
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
+        config_name = _config_name(body.get("config_name", ""))
+        config_path = _config_path(config_name)
+        if not config_path.exists():
+            return jsonify({"error": f"配置 '{config_name}' 不存在"}), 404
+        _load(config_path)
+        running_services = [
+            role
+            for role, status in service_manager.status().items()
+            if status["state"] == "running"
+        ]
+        if running_services:
+            raise ValueError("stop Actor and Learner before running a viewer example")
+        status = example_runner.start(
+            example_id=body.get("example_id", ""),
+            config_name=config_name,
+            config_path=config_path,
+            steps=body.get("steps", 2000),
+        )
+        return jsonify(status), 201
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/console/example-run/stop")
+def stop_console_example():
+    if not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 415
+    try:
+        return jsonify(example_runner.stop())
+    except (OSError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/console/example-run/log")
+def console_example_log():
+    return jsonify({"text": example_runner.log_tail()})
 
 
 @app.get("/api/configs")

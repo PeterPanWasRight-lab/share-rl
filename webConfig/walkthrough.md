@@ -13,6 +13,7 @@
 9. 保存改为临时文件原子替换；无效编辑保持原文件不变。
 10. 服务默认改为 `127.0.0.1`、关闭 debug/reloader，避免后台出现父子两个 Flask 进程。
 11. “添加转移边”改为动态选择表单：轴、比较方式、设备、图像尺寸、步数键和成功键均可直接选择，无需手写 JSON。
+12. 点击已有转移边也使用同一套选择表单，可修改起点、终点、类型及对应参数，不再编辑原始 JSON。
 
 ## 自动验证
 
@@ -40,11 +41,11 @@ test_custom_config:    1 primitive,   0 transitions, strict JSON PASS
 1. 打开 <http://127.0.0.1:5050>，确认左侧出现两个配置。
 2. 打开 `pick_insert_example`，确认图中有 12 个节点和 12 条边，`move_above_A` 为绿色起始边框，`done` 为红色终止边框。
 3. 点击节点，修改说明或位姿后保存并重新加载。
-4. 点击边，修改参数 JSON；输入非法 JSON 时应只显示错误，不写盘。
+4. 点击边，确认起点、终点、类型及参数均正确预填；切换类型时参数选项同步变化。
 5. 新建配置，添加终止节点及入边，再验证、保存、重新加载和删除。
 
 当前系统的 `/usr/bin/chromium-browser` 是未安装 Chromium Snap 的占位脚本，因此本次无法执行 headless 浏览器截图；页面脚本已通过语法检查，静态资源和全部 API 已从真实 5050 服务验证。
 
 ## 序列化说明
 
-当前仓库启用真实 MP-Net backend 时，公开的 `load_mpnet_config()` 无法读取现有 flat JSON（要求顶层 `type`），而 `save_mpnet_config()` 也会因 MP-Net choice 未注册而报错。网页因此使用同一模块现有的 `_encode_mpnet/_decode_mpnet` 作为 flat JSON 适配层，同时仍调用公开的 `validate_mpnet_config()`、`apply_edit()` 和 `summarize_mpnet_debug()`。这个兼容处理只存在于 `webConfig/server.py`，没有改动源模块。
+WebConfig 保存为便于浏览器编辑的 flat JSON。公开的 load_mpnet_config(path) 会自动识别这种格式，调用 flat 解码和正式校验后返回 ManipulationPrimitiveNetConfig；带顶层 type 的既有 Draccus 配置仍走原加载路径。运行程序不会自动扫描 webConfig/configs/，调用方需要显式传入所选 JSON 路径。
