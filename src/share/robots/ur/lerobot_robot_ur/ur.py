@@ -36,6 +36,7 @@ from share.robots.ur.lerobot_robot_ur.controller import (
 from share.robots.ur.lerobot_robot_ur.wrench_monitor import WrenchMonitorProcess
 
 from share.grippers.robotiq_controller import RTDERobotiqController
+from share.robots.gripper_command_limiter import GripperCommandLimiter
 from share.utils.transformation_utils import euler_xyz_from_rotvec
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,9 @@ class UR(Robot):
         super().__init__(config)
         self.config = config
         self.task_frame = TaskFrameCommand(controller_overrides=self._default_controller_overrides())
+        self._gripper_command_limiter = GripperCommandLimiter(
+            min_interval_s=config.gripper_min_command_interval_s
+        )
 
         self.shm = SharedMemoryManager()
         self.shm.start()
@@ -311,12 +315,18 @@ class UR(Robot):
                     self.task_frame.control_mode[i] = ControlMode.WRENCH
                     self.task_frame.policy_mode[i] = PolicyMode.ABSOLUTE
 
+        executed_action = dict(action)
         if self.gripper is not None and f"{GRIPPER_KEY}.pos" in action:
-            self.send_gripper_action(action[f"{GRIPPER_KEY}.pos"])
+            gripper_target, should_send = self._gripper_command_limiter.filter(
+                float(action[f"{GRIPPER_KEY}.pos"])
+            )
+            executed_action[f"{GRIPPER_KEY}.pos"] = gripper_target
+            if should_send:
+                self.send_gripper_action(gripper_target)
 
         self.controller.send_cmd(self.task_frame)
 
-        return action
+        return executed_action
 
     def send_gripper_action(self, gripper_action: float):
         self.gripper.move(gripper_action, vel=self.config.gripper_vel, force=self.config.gripper_force)

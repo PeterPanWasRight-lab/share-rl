@@ -36,6 +36,7 @@ class URV2Config(RobotConfig):
     gripper_frequency: float = 50.0
     gripper_vel: float = 1.0
     gripper_force: float = 1.0
+    gripper_min_command_interval_s: float = 0.5
     gripper_soft_real_time: bool = False
     gripper_rt_core: int = 4
 
@@ -80,6 +81,8 @@ class URV2Config(RobotConfig):
     controller: ControllerConfig = field(default_factory=ForceModeControllerConfig)
 
     def __post_init__(self):
+        if float(self.gripper_min_command_interval_s) < 0.0:
+            raise ValueError("URV2Config.gripper_min_command_interval_s must be non-negative.")
         if len(self.kp) != 6:
             raise ValueError("URV2Config.kp must be a length-6 list.")
         if len(self.kd) != 6:

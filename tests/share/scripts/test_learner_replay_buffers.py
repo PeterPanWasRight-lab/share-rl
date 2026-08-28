@@ -5,9 +5,11 @@ import queue
 
 import pytest
 import torch
+from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.rl.buffer import ReplayBuffer
 from lerobot.transport.utils import transitions_to_bytes
+from lerobot.utils.constants import ACTION, OBS_STATE
 
 try:
     from lerobot.datasets.utils import dataset_to_policy_features
@@ -16,11 +18,17 @@ except ImportError:  # Older LeRobot versions do not expose this helper.
 
 from share.scripts import learner_server
 from share.scripts.learner_server import (
+    adapt_legacy_xyz_gripper_dataset,
+    adapt_legacy_xyz_gripper_policy_stats,
     initialize_offline_replay_buffers,
     initialize_replay_buffers,
+    make_optimizers,
+    optimize_policy_once,
+    prepare_forward_batch,
     process_transitions,
     save_training_checkpoint,
 )
+from share.policies.sac_dagger import SACDaggerBCConfig, SACDaggerBCPolicy
 
 
 def _policy_stub() -> SimpleNamespace:
@@ -30,6 +38,434 @@ def _policy_stub() -> SimpleNamespace:
             offline_buffer_capacity=8,
             input_features={"observation.state": None},
         )
+    )
+
+
+def test_sac_updates_are_unlocked_by_new_online_transitions():
+    policy = SimpleNamespace(config=SimpleNamespace(online_step_before_learning=300))
+
+    assert learner_server._unlocked_sac_update_count(policy, 299) == 0
+    assert learner_server._unlocked_sac_update_count(policy, 300) == 1
+    assert learner_server._unlocked_sac_update_count(policy, 349) == 50
+
+
+def test_actor_updates_start_after_critic_warmup():
+    assert not learner_server._should_update_actor(update_index=299, actor_update_after=300)
+    assert learner_server._should_update_actor(update_index=300, actor_update_after=300)
+    assert learner_server._should_update_actor(update_index=0, actor_update_after=0)
+
+
+def test_frozen_actor_gradients_are_removed_from_shared_critic_step():
+    actor = torch.nn.Linear(3, 2)
+    for parameter in actor.parameters():
+        parameter.grad = torch.ones_like(parameter)
+
+    learner_server._clear_module_gradients(actor)
+    assert all(parameter.grad is None for parameter in actor.parameters())
+
+
+def test_shared_actor_is_bitwise_frozen_until_critic_warmup_finishes(monkeypatch):
+    config = SACDaggerBCConfig(
+        device="cpu",
+        storage_device="cpu",
+        training_mode="sac",
+        actor_update_after=1,
+        sac_bc_loss_weight=1.0,
+        freeze_shared_encoder_during_sac=True,
+        shared_encoder=True,
+        use_torch_compile=False,
+        input_features={OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(3,))},
+        output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(2,))},
+    )
+    policy = SACDaggerBCPolicy(config).train()
+    optimizers = make_optimizers(policy)
+    batch = {
+        ACTION: torch.zeros(4, 2),
+        "reward": torch.ones(4),
+        "state": {OBS_STATE: torch.randn(4, 3)},
+        "next_state": {OBS_STATE: torch.randn(4, 3)},
+        "done": torch.zeros(4),
+        "observation_feature": None,
+        "next_observation_feature": None,
+        "complementary_info": None,
+    }
+    monkeypatch.setattr(learner_server, "prepare_forward_batch", lambda **_: batch)
+
+    actor_before = {key: value.detach().clone() for key, value in policy.actor.state_dict().items()}
+    encoder_before = {
+        key: value.detach().clone() for key, value in policy.actor.encoder.state_dict().items()
+    }
+    critic_before = {
+        key: value.detach().clone()
+        for key, value in policy.critic_ensemble.state_dict().items()
+        if not key.startswith("encoder.")
+    }
+    optimize_policy_once(
+        policy=policy,
+        preprocessor=None,
+        optimizers=optimizers,
+        online_iterator=iter([batch]),
+        offline_iterator=None,
+        optimization_step=0,
+    )
+
+    assert all(torch.equal(actor_before[key], value) for key, value in policy.actor.state_dict().items())
+    assert any(
+        not torch.equal(critic_before[key], value)
+        for key, value in policy.critic_ensemble.state_dict().items()
+        if key in critic_before
+    )
+
+    training_infos = optimize_policy_once(
+        policy=policy,
+        preprocessor=None,
+        optimizers=optimizers,
+        online_iterator=iter([batch]),
+        offline_iterator=None,
+        optimization_step=1,
+    )
+
+    assert any(not torch.equal(actor_before[key], value) for key, value in policy.actor.state_dict().items())
+    assert "loss_bc_anchor" in training_infos
+    assert all(
+        torch.equal(encoder_before[key], value)
+        for key, value in policy.actor.encoder.state_dict().items()
+    )
+
+
+def test_learner_uses_configured_dataset_video_backend():
+    cfg = SimpleNamespace(dataset=SimpleNamespace(video_backend="pyav"))
+
+    assert learner_server._dataset_video_backend(cfg) == "pyav"
+
+
+def test_legacy_xyz_gripper_dataset_is_projected_without_copying_media():
+    sample = {
+        "observation.state": torch.arange(31, dtype=torch.float32),
+        "action": torch.arange(4, dtype=torch.float32),
+        "observation.images.front": torch.zeros(3, 64, 64),
+    }
+    dataset = [sample]
+    policy = SimpleNamespace(
+        config=SimpleNamespace(
+            input_features={"observation.state": SimpleNamespace(shape=(30,))},
+            output_features={"action": SimpleNamespace(shape=(3,))},
+        )
+    )
+
+    projected = adapt_legacy_xyz_gripper_dataset(dataset, policy)
+
+    expected_state = torch.arange(30, dtype=torch.float32)
+    expected_state[[25, 26, 28, 29]] *= -1
+    assert torch.equal(projected[0]["observation.state"], expected_state)
+    assert torch.equal(sample["observation.state"], torch.arange(31, dtype=torch.float32))
+    assert projected[0]["action"].shape == (3,)
+    assert projected[0]["observation.images.front"] is sample["observation.images.front"]
+
+
+def test_prepare_forward_batch_skips_image_cache_for_state_only_policy(monkeypatch):
+    policy = SimpleNamespace(actor=SimpleNamespace(encoder=SimpleNamespace(image_keys=[])))
+    batch = {
+        "action": torch.zeros(2, 3),
+        "reward": torch.zeros(2),
+        "state": {"observation.state": torch.zeros(2, 30)},
+        "next_state": {"observation.state": torch.ones(2, 30)},
+        "done": torch.zeros(2, dtype=torch.bool),
+    }
+
+    monkeypatch.setattr(
+        learner_server,
+        "preprocess_replay_batch",
+        lambda **kwargs: (
+            kwargs["observations"],
+            kwargs["actions"],
+            kwargs["next_observations"],
+        ),
+    )
+    monkeypatch.setattr(learner_server, "check_nan_in_transition", lambda **_: False)
+    monkeypatch.setattr(
+        learner_server,
+        "get_observation_features",
+        lambda **_: pytest.fail("state-only policy must not request image features"),
+    )
+
+    prepared = prepare_forward_batch(policy=policy, preprocessor=None, batch=batch)
+
+    assert prepared is not None
+    assert prepared["observation_feature"] is None
+    assert prepared["next_observation_feature"] is None
+
+
+
+def test_legacy_xyz_gripper_stats_are_projected_with_samples():
+    policy_cfg = SimpleNamespace(
+        dataset_stats={
+            "observation.state": {
+                "min": list(range(31)),
+                "max": list(range(100, 131)),
+                "count": [9059],
+            },
+            "action": {
+                "min": [-0.1, -0.1, -0.1, 1.0],
+                "max": [0.1, 0.1, 0.1, 1.0],
+            },
+        }
+    )
+    env_features = {
+        "observation.state": SimpleNamespace(shape=(30,)),
+        "action": SimpleNamespace(shape=(3,)),
+    }
+
+    adapt_legacy_xyz_gripper_policy_stats(policy_cfg=policy_cfg, env_features=env_features)
+
+    expected_min = list(range(30))
+    expected_max = list(range(100, 130))
+    for index in (25, 26, 28, 29):
+        expected_min[index] = -(100 + index)
+        expected_max[index] = -index
+    assert policy_cfg.dataset_stats["observation.state"]["min"] == expected_min
+    assert policy_cfg.dataset_stats["observation.state"]["max"] == expected_max
+    assert policy_cfg.dataset_stats["observation.state"]["count"] == [9059]
+    assert policy_cfg.dataset_stats["action"]["min"] == [-0.1, -0.1, -0.1]
+    assert policy_cfg.dataset_stats["action"]["max"] == [0.1, 0.1, 0.1]
+
+
+def test_legacy_single_frame_dataset_is_stacked_without_crossing_episodes():
+    samples = []
+    for episode, frame, offset in ((0, 0, 0), (0, 1, 100), (1, 0, 200)):
+        samples.append(
+            {
+                "observation.state": torch.arange(31, dtype=torch.float32) + offset,
+                "action": torch.arange(4, dtype=torch.float32),
+                "episode_index": torch.tensor(episode),
+                "frame_index": torch.tensor(frame),
+            }
+        )
+    policy = SimpleNamespace(
+        config=SimpleNamespace(
+            input_features={"observation.state": SimpleNamespace(shape=(60,))},
+            output_features={"action": SimpleNamespace(shape=(3,))},
+        )
+    )
+
+    projected = adapt_legacy_xyz_gripper_dataset(samples, policy)
+    first = projected[0]["observation.state"]
+    second = projected[1]["observation.state"]
+    new_episode = projected[2]["observation.state"]
+
+    assert first.shape == (60,)
+    assert torch.equal(first[:30], first[30:])
+    assert torch.equal(second[:30], first[30:])
+    assert torch.equal(new_episode[:30], new_episode[30:])
+
+
+def test_legacy_stats_are_duplicated_for_two_frame_state():
+    policy_cfg = SimpleNamespace(
+        dataset_stats={
+            "observation.state": {"mean": list(range(31)), "std": [1.0] * 31},
+            "action": {"min": [-0.1, -0.1, -0.1, 1.0], "max": [0.1, 0.1, 0.1, 1.0]},
+        }
+    )
+    env_features = {
+        "observation.state": SimpleNamespace(shape=(60,)),
+        "action": SimpleNamespace(shape=(3,)),
+    }
+
+    adapt_legacy_xyz_gripper_policy_stats(policy_cfg=policy_cfg, env_features=env_features)
+
+    mean = policy_cfg.dataset_stats["observation.state"]["mean"]
+    std = policy_cfg.dataset_stats["observation.state"]["std"]
+    assert len(mean) == len(std) == 60
+    assert mean[:30] == mean[30:]
+    assert std[:30] == std[30:]
+
+def test_external_dataset_stats_fill_missing_policy_features(tmp_path):
+    dataset_root = tmp_path / "demos" / "insert"
+    (dataset_root / "meta").mkdir(parents=True)
+    (dataset_root / "meta" / "stats.json").write_text(
+        '{"observation.state": {"min": [0.0, 1.0], "max": [2.0, 3.0]}, '
+        '"action": {"min": [-0.2], "max": [0.2]}}'
+    )
+    policy_cfg = SimpleNamespace(
+        input_features={"observation.state": None},
+        output_features={"action": None},
+        dataset_stats={
+            "observation.state": {"min": [0.0, 0.0], "max": [1.0, 1.0]},
+            "action": {"min": [-1.0], "max": [1.0]},
+        },
+    )
+    registry = SimpleNamespace(adaptive_ids=["insert"], policy_cfgs={"insert": policy_cfg})
+    cfg = SimpleNamespace(dataset=SimpleNamespace(root=tmp_path / "demos"))
+
+    learner_server._apply_external_dataset_stats(cfg=cfg, registry=registry)
+
+    assert policy_cfg.dataset_stats["observation.state"]["min"] == [0.0, 1.0]
+    assert policy_cfg.dataset_stats["action"]["min"] == [-1.0]
+
+
+def test_external_dataset_stats_load_before_policy_features_are_populated(tmp_path):
+    dataset_root = tmp_path / "demos" / "insert"
+    (dataset_root / "meta").mkdir(parents=True)
+    (dataset_root / "meta" / "stats.json").write_text(
+        '{"observation.state": {"min": [0.0, 1.0], "max": [2.0, 3.0]}}'
+    )
+    policy_cfg = SimpleNamespace(input_features={}, output_features={}, dataset_stats={})
+    registry = SimpleNamespace(adaptive_ids=["insert"], policy_cfgs={"insert": policy_cfg})
+    cfg = SimpleNamespace(dataset=SimpleNamespace(root=tmp_path / "demos"))
+
+    learner_server._apply_external_dataset_stats(cfg=cfg, registry=registry)
+
+    assert policy_cfg.dataset_stats["observation.state"]["min"] == [0.0, 1.0]
+
+
+def test_external_dataset_stats_preserve_explicit_visual_stats(tmp_path):
+    dataset_root = tmp_path / "demos" / "insert"
+    (dataset_root / "meta").mkdir(parents=True)
+    (dataset_root / "meta" / "stats.json").write_text(
+        '{"observation.images.front": {"mean": [0.5, 0.5, 0.5], '
+        '"std": [0.001, 0.001, 0.001]}}'
+    )
+    imagenet = {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}
+    policy_cfg = SimpleNamespace(
+        input_features={},
+        output_features={},
+        dataset_stats={"observation.images.front": imagenet.copy()},
+    )
+    registry = SimpleNamespace(adaptive_ids=["insert"], policy_cfgs={"insert": policy_cfg})
+    cfg = SimpleNamespace(dataset=SimpleNamespace(root=tmp_path / "demos"))
+
+    learner_server._apply_external_dataset_stats(cfg=cfg, registry=registry)
+
+    assert policy_cfg.dataset_stats["observation.images.front"] == imagenet
+
+
+def test_external_demos_reuse_loaded_buffer_without_duplicate_copy(tmp_path, monkeypatch):
+    policy = _policy_stub()
+    external_root = tmp_path / "demos" / "insert"
+    external_root.mkdir(parents=True)
+    demo_buffer = ReplayBuffer(
+        capacity=8,
+        device="cpu",
+        storage_device="cpu",
+        state_keys=policy.config.input_features.keys(),
+        optimize_memory=False,
+    )
+    _add_demo_transitions(demo_buffer)
+
+    class _FakeDataset:
+        def __len__(self) -> int:
+            return len(demo_buffer)
+
+    fake_dataset = _FakeDataset()
+    monkeypatch.setattr(learner_server, "LeRobotDataset", lambda **kwargs: fake_dataset)
+    monkeypatch.setattr(
+        learner_server.ReplayBuffer,
+        "from_lerobot_dataset",
+        lambda **kwargs: demo_buffer,
+    )
+    cfg = SimpleNamespace(
+        resume=False,
+        output_dir=tmp_path / "run",
+        dataset=SimpleNamespace(repo_id="repo", root=tmp_path / "demos", video_backend="pyav"),
+        env=SimpleNamespace(task="task"),
+    )
+
+    buffers = initialize_offline_replay_buffers(
+        cfg=cfg,
+        policies={"insert": policy},
+        device="cpu",
+        storage_device="cpu",
+    )
+
+    assert buffers["insert"] is demo_buffer
+
+
+def test_bc_dataset_stream_loader_uses_memory_optimized_storage():
+    samples = [
+        {
+            "observation.state": torch.tensor([float(index), float(index + 1)]),
+            "action": torch.tensor([0.1, 0.2]),
+            "next.reward": torch.tensor(float(index == 2)),
+            "next.done": torch.tensor(index == 2),
+            "episode_index": torch.tensor(0),
+        }
+        for index in range(3)
+    ]
+
+    buffer = learner_server._stream_bc_replay_buffer_from_lerobot_dataset(
+        lerobot_dataset=samples,
+        capacity=3,
+        device="cpu",
+        storage_device="cpu",
+        state_keys=("observation.state",),
+    )
+
+    assert len(buffer) == 3
+    assert buffer.optimize_memory is True
+    assert buffer.next_states is buffer.states
+    assert torch.equal(
+        buffer.states["observation.state"],
+        torch.tensor([[0.0, 1.0], [1.0, 2.0], [2.0, 3.0]]),
+    )
+    assert torch.equal(buffer.dones, torch.tensor([False, False, True]))
+
+
+def test_sac_dagger_external_demos_use_streaming_memory_optimized_storage(
+    tmp_path, monkeypatch
+):
+    samples = [
+        {
+            "observation.state": torch.tensor([float(index), float(index + 1)]),
+            "action": torch.tensor([0.1, 0.2]),
+            "next.reward": torch.tensor(float(index == 2)),
+            "next.done": torch.tensor(index == 2),
+            "episode_index": torch.tensor(0),
+        }
+        for index in range(3)
+    ]
+    policy = SACDaggerBCPolicy(
+        SACDaggerBCConfig(
+            device="cpu",
+            storage_device="cpu",
+            training_mode="sac",
+            use_torch_compile=False,
+            offline_buffer_capacity=3,
+            input_features={
+                OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(2,))
+            },
+            output_features={
+                ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(2,))
+            },
+        )
+    )
+    external_root = tmp_path / "demos" / "insert"
+    external_root.mkdir(parents=True)
+    monkeypatch.setattr(learner_server, "LeRobotDataset", lambda **kwargs: samples)
+    monkeypatch.setattr(
+        learner_server.ReplayBuffer,
+        "from_lerobot_dataset",
+        lambda **kwargs: pytest.fail("SACDagger demos must use the streaming loader"),
+    )
+    cfg = SimpleNamespace(
+        resume=False,
+        output_dir=tmp_path / "run",
+        dataset=SimpleNamespace(
+            repo_id="repo", root=tmp_path / "demos", video_backend="pyav"
+        ),
+        env=SimpleNamespace(task="task"),
+    )
+
+    buffer = initialize_offline_replay_buffers(
+        cfg=cfg,
+        policies={"insert": policy},
+        device="cpu",
+        storage_device="cpu",
+    )["insert"]
+
+    assert buffer.optimize_memory is True
+    batch = buffer.sample(batch_size=2)
+    assert torch.equal(
+        batch["next_state"][OBS_STATE], batch["state"][OBS_STATE] + 1
     )
 
 

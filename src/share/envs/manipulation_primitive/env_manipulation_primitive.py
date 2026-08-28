@@ -14,7 +14,11 @@ from share.teleoperators import TeleopEvents
 
 
 class ManipulationPrimitive(gymnasium.Env):
-    """Minimal gym env wiring robots, cameras, and task-frame commands."""
+    """单个操作原语 (Manipulation Primitive) 的底层运行时 Gymnasium 环境。
+
+    作为状态机中的“节点环境”，直接持有机械臂、相机句柄和 TaskFrame 控制契约。
+    负责将算法/上层的动作下发给真实或仿真机器人，并收集传感器观测。
+    """
 
     def __init__(
         self,
@@ -23,14 +27,13 @@ class ManipulationPrimitive(gymnasium.Env):
         cameras: dict[str, Camera],
         display_cameras: bool = False
     ):
-        """Initialize robot/camera handles and primitive runtime state.
+        """初始化原语运行时环境。
 
         Args:
-            task_frame: Per-robot task-frame command objects mutated by the
-                primitive config and consumed by the robot interfaces.
-            robot_dict: Connected robots keyed by primitive robot name.
-            cameras: Connected cameras exposed through the env observation dict.
-            display_cameras: Whether ``render()`` should open live camera views.
+            task_frame: 每个机械臂对应的任务坐标系对象字典（由原语 Config 定义并在入口期更新）。
+            robot_dict: 已连接的机械臂对象字典（从 MP-Net 共享传入）。
+            cameras: 已连接的相机对象字典（从 MP-Net 共享传入）。
+            display_cameras: 调用 render() 时是否弹出 OpenCV 实时视频预览窗口。
         """
         self.robot_dict = robot_dict
         self.task_frame = task_frame
@@ -47,20 +50,22 @@ class ManipulationPrimitive(gymnasium.Env):
             self._motor_keys.update([f"{name}.{key}" for key in robot._motors_ft])
 
     def step(self, action: dict[str, dict[str, float]]) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, Any]]:
-        """Apply one outer primitive step.
+        """执行单步动作下发与观测收集（原语级 Step）。
 
         Args:
-            action: Nested action dictionary keyed first by robot name and then
-                by low-level command key such as ``x.ee_pos`` or ``joint_1.pos``.
+            action: 嵌套动作字典。第一层键为机械臂名称（如 'ur5e'），第二层键为控制轴动作（如 'x.ee_pos': 0.01）。
 
         Returns:
-            Standard gym ``(observation, reward, terminated, truncated, info)``
-            values for one primitive step.
+            标准的 Gym 五元组 (obs, reward, terminated, truncated, info)。
         """
+        # 1. 确保任务坐标系已下发给底层控制器
         self.apply_task_frames()
+
+        # 2. 将动作指令发送给机械臂
         for name, robot in self.robot_dict.items():
             robot.send_action(action.get(name, {}))
 
+        # 3. 收集最新相机图像与机器人状态
         obs = self._get_observation()
 
         if self.display_cameras:
@@ -79,28 +84,21 @@ class ManipulationPrimitive(gymnasium.Env):
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[ObsType, dict[str, Any]]:
-        """Reset counters and clear env-owned runtime state.
+        """重置原语内部计数器和运行时状态。
 
-        Args:
-            seed: Optional gym reset seed.
-            options: Optional reset payload forwarded by the MP-Net runtime.
-
-        Returns:
-            A fresh raw observation and default info payload for the primitive.
+        注意：单个原语 reset 时默认不会自动让机械臂回零（避免破坏物理连续性），
+        只重新下发 TaskFrame 并清空该原语的临时运行状态。
         """
         super().reset(seed=seed, options=options)
 
-        # Manipulation primitives do not execute an autonomous reset trajectory by default.
-        # We only re-send the configured task frame to robots that support task-frame commands.
         self.apply_task_frames()
-
         self.current_step = 0
         self.reset_runtime_state()
         obs = self._get_observation()
         return obs, self._get_info()
 
     def render(self) -> None:
-        """Display camera observations using OpenCV windows."""
+        """使用 OpenCV 实时窗口可视化当前所有相机的画面。"""
         import cv2
         current_observation = self._get_observation()
         if current_observation is not None and "pixels" in current_observation:
@@ -109,13 +107,13 @@ class ManipulationPrimitive(gymnasium.Env):
             cv2.waitKey(1)
 
     def close(self) -> None:
-        """Disconnect any connected robots."""
+        """断开所有机械臂连接。"""
         for robot_dict in self.robot_dict.values():
             if robot_dict.is_connected:
                 robot_dict.disconnect()
 
     def stop(self) -> None:
-        """Hold the current robot pose by sending zero position delta on all axes."""
+        """紧急/悬停制动：在所有轴上下发零位移指令，使机械臂保持当前位姿静止。"""
         for name, robot in self.robot_dict.items():
             if not getattr(robot, "is_connected", False):
                 continue
@@ -156,30 +154,30 @@ class ManipulationPrimitive(gymnasium.Env):
                 robot.send_action(action)
 
     def apply_task_frames(self) -> None:
-        """Re-send the current task frame to every robot that supports it."""
+        """将当前配置的 TaskFrame 下发同步给所有支持任务坐标系的机器人接口。"""
         for name, robot in self.robot_dict.items():
             if self._is_task_frame_robot.get(name, False):
                 robot.set_task_frame(self.task_frame[name])
 
     def reset_runtime_state(self) -> None:
-        """Clear runtime-only target/progress state owned by this env."""
+        """清空当前原语的运行时临时变量（目标位姿、完成标志、轨迹进度）。"""
         self._target_pose_info_key: str | None = None
         self._target_pose: dict[str, list[float]] = {}
         self._primitive_complete = False
         self._trajectory_progress = 0.0
 
     def attach_shared_runtime_values(self, shared_runtime_values: dict[str, Any]) -> None:
-        """Attach MP-Net-scoped runtime values shared across primitive envs."""
+        """挂载由 MP-Net 管理的全局跨原语共享黑板字典。"""
         self._shared_runtime_values = shared_runtime_values
 
     def set_runtime_value(self, key: str, value: Any) -> None:
-        """Store a small runtime value that later primitives may read."""
+        """向跨原语黑板中写入动态运行时数据（例如上一原语抓取物体后的估计位置）。"""
         if self._shared_runtime_values is None:
-            raise RuntimeError("Shared runtime values are not attached to this primitive env.")
+            raise RuntimeError("当前原语未挂载共享黑板字典 (shared_runtime_values)。")
         self._shared_runtime_values[key] = value
 
     def get_runtime_value(self, key: str, default: Any = None) -> Any:
-        """Read a runtime value previously written by another primitive."""
+        """从跨原语黑板中读取先前原语写入的运行时数据。"""
         if self._shared_runtime_values is None:
             return default
         return self._shared_runtime_values.get(key, default)
@@ -191,14 +189,12 @@ class ManipulationPrimitive(gymnasium.Env):
         *,
         update_task_frame: bool = True,
     ) -> None:
-        """Store the current runtime target pose and update task-frame targets.
+        """设置当前原语的目标位姿，并同步更新 TaskFrame。
 
         Args:
-            target_pose: Per-robot 6D target poses in this primitive's task
-                frame. These values become the live task-frame targets.
-            info_key: Optional info key used to publish the target pose.
-            update_task_frame: Whether these targets should also become the live
-                task-frame command stored on the env.
+            target_pose: 各机械臂在当前原语坐标系下的 6D 目标位姿字典。
+            info_key: 发布到 info 中的键名（如 'primitive_target_pose'）。
+            update_task_frame: 是否同时修改 self.task_frame 的静态 target 字段。
         """
         self._target_pose = {name: list(pose) for name, pose in target_pose.items()}
         self._target_pose_info_key = info_key
@@ -210,8 +206,8 @@ class ManipulationPrimitive(gymnasium.Env):
             for axis in range(min(len(self.task_frame[name].target), len(pose))):
                 self.task_frame[name].target[axis] = float(pose[axis])
 
-    def _get_observation(self):
-        """Collect raw camera pixels and robot observations into one dict."""
+    def _get_observation(self) -> dict[str, Any]:
+        """抓取并聚合所有相机的当前帧图像以及机械臂的传感器状态，构建统一的原始观测字典。"""
         obs_dict = {}
 
         for cam_key, cam in self.cameras.items():
@@ -223,8 +219,8 @@ class ManipulationPrimitive(gymnasium.Env):
 
         return obs_dict
 
-    def _get_info(self):
-        """Return the primitive runtime info payload for the current step."""
+    def _get_info(self) -> dict[str, Any]:
+        """构建当前步的运行时元数据字典。"""
         info = {
             TeleopEvents.IS_INTERVENTION: False,
             "primitive_complete": bool(self._primitive_complete),
@@ -238,7 +234,12 @@ class ManipulationPrimitive(gymnasium.Env):
 
 
 class OpenLoopTrajectoryPrimitive(ManipulationPrimitive):
-    """Primitive env variant that executes a scripted chunk per outer step."""
+    """开环脚本轨迹原语环境（ManipulationPrimitive 的子类）。
+
+    用于执行预先规划好的平滑几何轨迹（如直线插值、最小加加速度轨迹等）。
+    在该原语下，外部传入的 action 会被忽略，环境每一步按照时间比例 alpha (0.0 -> 1.0)
+    自动计算当前插值位姿并下发给机械臂，更新 trajectory_progress 和 primitive_complete 标志。
+    """
 
     def __init__(
         self,
@@ -248,14 +249,14 @@ class OpenLoopTrajectoryPrimitive(ManipulationPrimitive):
         open_loop_config: Any,
         display_cameras: bool = False,
     ):
-        """Initialize the scripted open-loop primitive env.
+        """初始化开环脚本轨迹原语环境。
 
         Args:
-            task_frame: Per-robot task-frame command objects.
-            robot_dict: Connected robots keyed by primitive robot name.
-            cameras: Connected cameras exposed through the env observation dict.
-            open_loop_config: Config object supplying trajectory timing params.
-            display_cameras: Whether ``render()`` should open live camera views.
+            task_frame: 各机械臂对应的任务坐标系字典。
+            robot_dict: 已连接的机械臂对象字典。
+            cameras: 已连接的相机对象字典。
+            open_loop_config: 轨迹生成配置对象（提供 trajectory_timing 和 target_pose_at 方法）。
+            display_cameras: 是否开启 OpenCV 视频预览窗口。
         """
         self.open_loop_config = open_loop_config
         self._trajectory_substeps = 0
@@ -267,6 +268,7 @@ class OpenLoopTrajectoryPrimitive(ManipulationPrimitive):
         )
 
     def reset_runtime_state(self) -> None:
+        """重置开环轨迹的运行时插值状态与进度计时器。"""
         super().reset_runtime_state()
         self._start_pose: dict[str, list[float]] = {}
         self._duration_substeps = 0
@@ -279,12 +281,12 @@ class OpenLoopTrajectoryPrimitive(ManipulationPrimitive):
         target_pose: dict[str, list[float]],
         info_key: str | None,
     ) -> None:
-        """Initialize one scripted trajectory from entry-time poses.
+        """在原语入口期 (on_entry) 初始化轨迹的起点、终点和插值步数。
 
         Args:
-            start_pose: Per-robot 6D start poses in this primitive's task frame.
-            target_pose: Per-robot 6D target poses in this primitive's task
-                frame. These are also published as the env target pose.
+            start_pose: 各机械臂在当前任务坐标系下的起始位姿。
+            target_pose: 各机械臂在当前任务坐标系下的目标终点位姿。
+            info_key: 目标位姿发布到 info 字典中的键名。
         """
         self._start_pose = {name: list(pose) for name, pose in start_pose.items()}
         self._duration_substeps, self._substeps_per_step = self.open_loop_config.trajectory_timing(self.robot_dict)
@@ -299,16 +301,13 @@ class OpenLoopTrajectoryPrimitive(ManipulationPrimitive):
         self._trajectory_substeps = 0
 
     def step(self, action: dict[str, dict[str, float]]) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, Any]]:
-        """Run a scripted chunk of the open-loop trajectory.
+        """执行一个外层 Step，内部按照配置的子步数 (substeps) 逐步插值下发位姿。
 
         Args:
-            action: Ignored in v1. The primitive follows its scripted internal
-                trajectory instead of consuming an external policy action.
+            action: 外部策略动作（开环脚本轨迹下忽略此参数）。
 
         Returns:
-            Standard gym ``(observation, reward, terminated, truncated, info)``
-            values after executing up to the configured internal robot
-            steps.
+            标准的 Gym 五元组 (obs, reward, terminated, truncated, info)。
         """
         substeps = max(1, int(self._substeps_per_step))
         obs = self._get_observation()
@@ -318,6 +317,7 @@ class OpenLoopTrajectoryPrimitive(ManipulationPrimitive):
         for _ in range(substeps):
             self._trajectory_substeps += 1
             alpha = self._trajectory_substeps / float(self._duration_substeps)
+            # 依据时间比例 alpha (0.0 ~ 1.0) 从轨迹生成器计算当前这一子步的插值目标位姿
             scripted_pose = self.open_loop_config.target_pose_at(
                 alpha=alpha,
                 start_pose=self._start_pose,
@@ -335,7 +335,7 @@ class OpenLoopTrajectoryPrimitive(ManipulationPrimitive):
         return obs, reward, terminated, truncated, self._get_info()
 
     def _set_live_task_frame_pose(self, pose_by_robot: dict[str, list[float]]) -> None:
-        """Update the live task-frame setpoint used by the scripted runner."""
+        """更新当前运行时 TaskFrame 中设定的目标位姿。"""
         for name, pose in pose_by_robot.items():
             if name not in self.task_frame:
                 continue
@@ -343,14 +343,7 @@ class OpenLoopTrajectoryPrimitive(ManipulationPrimitive):
                 self.task_frame[name].target[axis] = float(pose[axis])
 
     def _action_from_pose(self, pose_by_robot: dict[str, list[float]]) -> dict[str, dict[str, float]]:
-        """Build one low-level action dict from the current scripted target pose.
-
-        Args:
-            pose_by_robot: Per-robot scripted task-space pose for this substep.
-
-        Returns:
-            Nested low-level robot commands matching the current scripted pose.
-        """
+        """将 6D 空间插值位姿转换为底层机械臂所期望的底层动作字典格式。"""
         action: dict[str, dict[str, float]] = {}
         for name, pose in pose_by_robot.items():
             frame = self.task_frame[name]

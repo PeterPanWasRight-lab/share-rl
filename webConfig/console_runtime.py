@@ -22,6 +22,12 @@ REPO_ROOT = THIS_DIR.parent
 PROFILE_PATH = THIS_DIR / "runtime_profile.json"
 SERVICE_ROLES = ("actor", "learner")
 ENV_TYPE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+ACTOR_TIMING_PATTERN = re.compile(
+    r"^(?:DEBUG|INFO) (?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*"
+    r"\[ACTOR\] primitive=(?P<primitive>\S+) "
+    r"loop=\s*(?P<loop_ms>[\d.]+)ms \((?P<loop_hz>[\d.]+)hz\) "
+    r"(?:policy|step)=\s*(?P<work_ms>[\d.]+)ms \((?P<work_hz>[\d.]+)hz\)"
+)
 VIEWER_EXAMPLES = {
     "pick_insert": {
         "label": "MuJoCo Pick & Insert",
@@ -397,6 +403,37 @@ def fetch_replay_metrics(profile: dict[str, Any]) -> dict[str, Any]:
         return {"connected": True, "url": url, "metrics": payload}
     except (OSError, ValueError, urllib.error.URLError) as exc:
         return {"connected": False, "url": url, "error": str(exc), "metrics": {"primitives": {}}}
+
+
+def fetch_actor_timing(profile: dict[str, Any]) -> dict[str, Any]:
+    """Read the latest Actor loop timing without exposing per-step lines in the UI log."""
+    profile = validate_profile(profile)
+    path = resolve_output_root(profile) / "logs" / f"actor_{profile['job_name']}.log"
+    if not path.is_file():
+        return {"available": False, "path": str(path)}
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 128 * 1024))
+            lines = handle.read().decode("utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return {"available": False, "path": str(path), "error": str(exc)}
+    for line in reversed(lines):
+        match = ACTOR_TIMING_PATTERN.search(line)
+        if match is None:
+            continue
+        values = match.groupdict()
+        return {
+            "available": True,
+            "primitive": values["primitive"],
+            "loop_hz": float(values["loop_hz"]),
+            "loop_ms": float(values["loop_ms"]),
+            "policy_hz": float(values["work_hz"]),
+            "policy_ms": float(values["work_ms"]),
+            "timestamp": values["timestamp"],
+        }
+    return {"available": False, "path": str(path)}
 
 
 class ViewerExampleRunner:

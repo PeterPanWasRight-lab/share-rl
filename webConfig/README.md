@@ -22,6 +22,7 @@ cd webConfig
 
 - “实验总览”集中显示服务状态、状态机配置数量以及 Buffer 关键指标。
 - “Actor / Learner”按照 Learner → Actor 的顺序启动服务，启动前自动保存当前算法表单，并支持设置日志行数、复制/清空日志和实际命令预览。
+- Actor 卡片单独显示 control-loop Hz、policy inference Hz 和当前 primitive；指标取自 timing DEBUG 日志，不会混入普通日志窗口刷屏。
 - “Replay Buffer”从 Learner 的本地 dashboard API 读取 online/offline transition、轨迹、成功、失败和干预统计。
 - “算法参数”保存白名单字段到 `runtime_profile.json`，只影响之后由控制台启动的进程。
 - Demo 与 checkpoint 下拉框在打开时重新扫描 `outputs/`，只列出带 `meta/info.json` 和 `meta/stats.json` 的示教根目录，以及带 `pretrained_model/config.json` 的策略 checkpoint，并按修改时间从新到旧排列。
@@ -43,6 +44,7 @@ Checkpoint 下拉框默认允许选择“不使用”，表示从当前环境配
 - 图中的蓝色节点是脚本原语，黄色节点包含可学习轴；绿色和红色边框分别表示起始、终止节点。
 - 起始原语、复位原语和 FPS 在左侧修改，点击“保存”后统一校验并写盘。
 - 点击节点可编辑说明、终止标记、目标位姿和可学习轴。
+- 点击节点可重命名原语；保存时同步更新 start/reset 和全部转移边引用，并重新执行完整配置校验。
 - 添加转移边时按类型显示下拉框、选项和数值输入，不需要手写 JSON。
 - 点击已有边可直接选择起点、终点和转移类型，并通过同一组结构化字段修改参数。
 - 新节点必须从现有节点创建入边，否则它无法从起始节点到达；非终止节点还必须创建出边。

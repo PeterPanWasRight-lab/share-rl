@@ -8,8 +8,8 @@ MENAGERIE_COMMIT = "da76818e269b82289eba39808e2fb91d679d6994"
 ACT_COMMIT = "742c753c0d4a5d87076c8f69e5628c79a8cc5488"
 
 
-def build_ur5e_2f85_model():
-    """Compose unmodified Menagerie models with the ACT insertion workpiece."""
+def _compose_model(peg_pos: list[float], peg_quat: list[float]):
+    """Compose the UR5e + 2F-85 + fixture + peg scene with a custom peg reset pose."""
     import mujoco
 
     scene = mujoco.MjSpec.from_file(str(ASSET_ROOT / "scene.xml"))
@@ -42,18 +42,19 @@ def build_ur5e_2f85_model():
     wrist_camera = gripper_base.add_camera()
     wrist_camera.name = "wrist"
     wrist_camera.pos = [0.08, 0.0, 0.07]
-    wrist_camera.mode = mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODY
-    wrist_camera.targetbody = "fixture"
+    # Fixed eye-in-hand extrinsics: the camera moves rigidly with the gripper
+    # and looks past the fingertips, but never re-aims at a scene body.
+    wrist_camera.mode = mujoco.mjtCamLight.mjCAMLIGHT_FIXED
+    wrist_camera.quat = [0.27234324, 0.0, 0.96220017, 0.0]
     wrist_camera.fovy = 58.0
 
     robot_frame = scene.worldbody.add_frame()
     robot_frame.attach_body(ur5e.body("base"), prefix="")
 
-    # ACT's peg is a free body. Its reset pose places one end between the open
-    # 2F-85 pads; MujocoRobot.reset_simulation closes the real linkage around it.
+    # ACT's peg is a free body. Its reset pose is supplied by the caller.
     peg_body = peg.body("peg")
-    peg_body.pos = [-0.13399703, 0.49200009, 0.28220037]
-    peg_body.quat = [-0.49999908, -0.50000275, -0.49999908, 0.49999908]
+    peg_body.pos = peg_pos
+    peg_body.quat = peg_quat
     peg_frame = scene.worldbody.add_frame()
     peg_frame.attach_body(peg_body, prefix="object_")
 
@@ -70,4 +71,37 @@ def build_ur5e_2f85_model():
     return scene.compile()
 
 
-__all__ = ["ACT_COMMIT", "ASSET_ROOT", "MENAGERIE_COMMIT", "build_ur5e_2f85_model"]
+def build_ur5e_2f85_model():
+    """Compose unmodified Menagerie models with the ACT insertion workpiece.
+
+    The peg resets to a post-grasp pose: one end between the open 2F-85 pads, so
+    MujocoRobot.reset_simulation closes the linkage around it.
+    """
+    return _compose_model(
+        peg_pos=[-0.13399703, 0.49200009, 0.28220037],
+        peg_quat=[-0.49999908, -0.50000275, -0.49999908, 0.49999908],
+    )
+
+
+def build_pick_insert_model():
+    """Compose the pick-and-insert scene with the peg resting free at pose A.
+
+    The peg stands vertically at A = (-0.25, 0.30, 0.11) with its tip on the
+    workbench (top at z = 0.05) and away from the fixture hole at
+    (-0.134, 0.492, 0.08). The peg is a 0.12 m bar, so its centre sits 0.06 m
+    above the tip. The pick-and-insert state machine can then grasp, transport,
+    and insert it.
+    """
+    return _compose_model(
+        peg_pos=[-0.25, 0.30, 0.11],
+        peg_quat=[-0.49999908, -0.50000275, -0.49999908, 0.49999908],
+    )
+
+
+__all__ = [
+    "ACT_COMMIT",
+    "ASSET_ROOT",
+    "MENAGERIE_COMMIT",
+    "build_pick_insert_model",
+    "build_ur5e_2f85_model",
+]

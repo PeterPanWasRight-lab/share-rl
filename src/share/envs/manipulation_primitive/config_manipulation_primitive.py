@@ -62,130 +62,247 @@ TRAJECTORY_PROGRESS_INFO_KEY = "trajectory_progress"
 
 @dataclass(slots=True)
 class PrimitiveEntryContext:
-    """Processed observation and task-frame origin forwarded on primitive entry."""
+    """原语入口期上下文对象（在状态机切换瞬间传递）。
+
+    当状态机从 source 原语切入 target 原语时，MP-Net 会打包这一瞬间的
+    处理后观测、坐标原点以及触发原因，并传递给目标原语的 on_entry() 钩子。
+    """
 
     source_primitive: str | None = None
+    """上一个刚退出的源原语名称。"""
+
     target_primitive: str | None = None
+    """即将进入的目标原语名称。"""
+
     observation: dict[str, Any] = field(default_factory=dict)
+    """切换瞬间机器人和相机的处理后最新观测字典。"""
+
     task_frame_origin: dict[str, list[float] | None] = field(default_factory=dict)
-    # Reason of the transition that caused this entry (e.g. "success", "time_limit"),
-    # or None for the initial episode-reset entry. Lets a primitive's on_entry branch
-    # on *why* it was entered without the generic net needing to know about it.
+    """源原语在退出时实际生效的任务坐标系原点（用于跨原语几何坐标对齐）。"""
+
     reason: str | None = None
+    """导致本次状态转移发生的判定原因（如 'target_pose_reached', 'time_limit' 等）。"""
 
 
 @dataclass
 class ImagePreprocessingConfig:
-    """Camera crop/resize options applied inside the env processor."""
+    """图像预处理配置（在环境处理器内应用）。"""
 
-    crop_params_dict: dict[str, tuple[int, int, int, int]] | None = None  # cam_name -> (top, left, height, width)
+    crop_params_dict: dict[str, tuple[int, int, int, int]] | None = None
+    """相机裁剪参数字典：cam_name -> (top, left, height, width)。"""
+
     resize_size: tuple[int, int] | None = None
+    """图像缩放尺寸：(height, width)，如 (64, 64) 或 (128, 128)。"""
+
     filter_keys: list[str] | None = None
+    """仅保留的相机图像键名列表。"""
+
     display_cameras: bool = False
+    """是否弹出 OpenCV 实时图像显示窗口。"""
 
 
 @dataclass
 class KinematicsConfig:
-    """Configuration for inverse kinematics processing."""
+    """逆运动学 (IK) 与正运动学 (FK) 求解器配置。"""
 
     enable: bool | dict[str, bool] = False
+    """是否启用运动学求解器（例如将末端位姿自动解算为关节角度）。"""
+
     use_virtual_reference: bool | dict[str, bool] = True
+    """是否使用虚拟参考点。"""
+
     urdf_path: str | dict[str, str | None] | None = None
+    """机械臂的 URDF 机器人描述模型文件路径。"""
+
     target_frame_name: str | dict[str, str | None] | None = None
+    """末端法兰或工具坐标系的 Link 名称。"""
+
     end_effector_bounds: dict[str, list[float]] | dict[str, dict[str, list[float]]] | None = None
+    """末端工作空间安全包络范围限制。"""
+
     end_effector_step_sizes: dict[str, float] | dict[str, dict[str, float]] | None = None
+    """单步最大允许的末端位移步长（防止产生过大突跃）。"""
 
 
 @dataclass
 class ObservationConfig:
-    """Configuration for observation processing."""
+    """观测状态处理器配置（决定哪些传感器信息会被打包进 observation.state）。"""
 
     add_joint_position_to_observation: bool | dict[str, bool] = True
+    """是否在观测中包含机械臂各关节角度 (joint.pos)。"""
+
     add_joint_velocity_to_observation: bool | dict[str, bool] = False
+    """是否在观测中包含各关节角速度 (joint.vel)。"""
+
     add_current_to_observation: bool | dict[str, bool] = False
+    """是否在观测中包含电机驱动电流。"""
 
     add_ee_pos_to_observation: bool | dict[str, bool] = False
-    add_ee_velocity_to_observation: bool | dict[str, bool] = False
-    add_ee_wrench_to_observation: bool | dict[str, bool] = False
+    """是否在观测中包含末端 6D 笛卡尔位姿 (ee_pos)。"""
 
-    ee_pos_axes: list[str] | dict[str, list[str]] | None = field(default_factory=lambda: [f"{ax}.ee_pos" for ax in TASK_FRAME_AXIS_NAMES])
-    ee_velocity_axes: list[str] | dict[str, list[str]] | None = field(default_factory=lambda: [f"{ax}.ee_vel" for ax in TASK_FRAME_AXIS_NAMES])
-    ee_wrench_axes: list[str] | dict[str, list[str]] | None = field(default_factory=lambda: [f"{ax}.ee_wrench" for ax in TASK_FRAME_AXIS_NAMES])
+    add_ee_velocity_to_observation: bool | dict[str, bool] = False
+    """是否在观测中包含末端 6D 线速度与角速度 (ee_vel)。"""
+
+    add_ee_wrench_to_observation: bool | dict[str, bool] = False
+    """是否在观测中包含六维力/力矩传感数据 (ee_wrench)。"""
+
+    ee_pos_axes: list[str] | dict[str, list[str]] | None = field(
+        default_factory=lambda: [f"{ax}.ee_pos" for ax in TASK_FRAME_AXIS_NAMES]
+    )
+    """要包含的末端位姿轴名称列表。"""
+
+    ee_velocity_axes: list[str] | dict[str, list[str]] | None = field(
+        default_factory=lambda: [f"{ax}.ee_vel" for ax in TASK_FRAME_AXIS_NAMES]
+    )
+    """要包含的末端速度轴名称列表。"""
+
+    ee_wrench_axes: list[str] | dict[str, list[str]] | None = field(
+        default_factory=lambda: [f"{ax}.ee_wrench" for ax in TASK_FRAME_AXIS_NAMES]
+    )
+    """要包含的力传感器轴名称列表。"""
 
     stack_frames: int | dict[str, int] = 0
+    """观测帧堆叠数量（0 表示不堆叠，>0 则将历史多帧堆叠为时序特征）。"""
+
     relative_ee_pos: bool | dict[str, bool] = False
+    """末端位姿是否转换为相对于任务原点的相对位姿。"""
 
 
 @dataclass
 class GripperConfig:
-    """Configuration for gripper control, discretization, and penalties."""
+    """夹爪控制与二值化离散化配置。"""
 
     enable: bool | dict[str, bool] = False
+    """当前原语是否启用夹爪通道。"""
+
     discretize: bool | dict[str, bool] = False
+    """是否将策略输出的连续动作离散化二值为张开(0.0)或闭合(1.0)。"""
+
     threshold: float | dict[str, float] = 0.5
+    """二值化离散化的动作阈值（例如 > 0.5 闭合，<= 0.5 张开）。"""
+
     mode: Literal["state", "pulse"] | dict[str, Literal["state", "pulse"]] = "state"
+    """控制模式：'state' (电平状态) 或 'pulse' (脉冲触发)。"""
+
     max_pos: float | dict[str, float] = 1.0
+    """夹爪最大开度。"""
+
     min_pos: float | dict[str, float] = 0.0
+    """夹爪最小开度（完全闭合）。"""
+
     static_pos: float | dict[str, float | None] | None = None
+    """静态固定开度（若设定，该原语将保持固定开度，策略不输出夹爪）。"""
+
     penalty: float | dict[str, float | None] | None = None
+    """不必要夹爪动作的惩罚系数。"""
 
 
 @dataclass
 class EventConfig:
-    """Mappings from teleop inputs to structured intervention events."""
+    """遥操作键盘/脚踏开关交互事件映射配置。"""
 
     key_mapping: dict[TeleopEvents, dict | keyboard.Key] = field(default_factory=lambda: {})
+    """键盘按键映射字典。"""
+
     pulse_events: tuple[TeleopEvents | str, ...] = ()
+    """单次触发脉冲事件集合。"""
+
     foot_switch_mapping: dict[tuple[TeleopEvents], dict] = field(default_factory=lambda: {})
+    """脚踏板硬件开关映射字典。"""
 
 
 @dataclass
 class HookConfig:
-    """Optional processor timing hook configuration."""
+    """动作与观测处理器耗时打点调试配置。"""
 
     time_env_processor: bool = False
+    """是否记录环境观测处理器的执行耗时。"""
+
     time_action_processor: bool = False
+    """是否记录动作处理器的执行耗时。"""
+
     log_every: int = 10
+    """打点日志打印频率（每 N 步一次）。"""
 
 
 @dataclass
 class ManipulationPrimitiveProcessorConfig:
-    """Top-level processor settings shared across robots and per robot."""
+    """操作原语的顶层处理器配置集合。"""
 
-    # for all arms
+    # 全局参数
     control_time_s: float = 10.0
-    fps: float = 10.0
-    image_preprocessing: ImagePreprocessingConfig | None = None
-    events: EventConfig = field(default_factory=EventConfig)
-    hooks: HookConfig = field(default_factory=HookConfig)
+    """单次操作的最长控制超时时间（秒）。"""
 
-    # per arm
+    fps: float = 10.0
+    """控制频率 (Hz)。"""
+
+    image_preprocessing: ImagePreprocessingConfig | None = None
+    """相机视觉预处理配置。"""
+
+    events: EventConfig = field(default_factory=EventConfig)
+    """遥操交互事件配置。"""
+
+    hooks: HookConfig = field(default_factory=HookConfig)
+    """性能调试钩子配置。"""
+
+    # 机械臂专属参数
     observation: ObservationConfig = field(default_factory=ObservationConfig)
+    """观测状态配置。"""
+
     gripper: GripperConfig = field(default_factory=GripperConfig)
+    """夹爪控制配置。"""
+
     kinematics: KinematicsConfig = field(default_factory=KinematicsConfig)
+    """运动学与工作空间配置。"""
 
 
 @dataclass
 class OpenLoopTrajectorySpec:
-    """Single edit surface for simple scripted open-loop trajectories."""
+    """开环脚本轨迹规格定义类。"""
 
     target: list[float] | dict[str, list[float]] | None = None
+    """目标绝对位姿 6D 向量（在任务坐标系下）。"""
+
     delta: list[float] | dict[str, list[float]] | None = None
+    """相对位移增量 6D 向量。"""
+
     frame: Literal["task", "world", "ee"] | dict[str, Literal["task", "world", "ee_current"]] = "task"
+    """delta 位移所参考的坐标系（'task' 任务系 / 'world' 世界系 / 'ee' 当前末端工具系）。"""
+
     duration_s: float | dict[str, float] = 1.0
+    """轨迹执行总时长（秒）。"""
 
 
 @dataclass
 class ManipulationPrimitiveConfig(EnvConfig, ChoiceRegistry):
-    """Shared config and entry hooks for one primitive in an MP-Net."""
+    """单个操作原语节点的标准声明式配置基类。
+
+    声明了该原语的 TaskFrame 契约、观测/动作处理器、绑定的神经网络策略（若有）、
+    以及进入该原语时的生命周期钩子 on_entry()。
+    """
     task_frame: TaskFrame | dict[str, TaskFrame] = field(default_factory=TaskFrame)
+    """任务坐标系契约配置。"""
+
     processor: ManipulationPrimitiveProcessorConfig = field(default_factory=ManipulationPrimitiveProcessorConfig)
+    """数据处理流水线配置。"""
+
     policy: PreTrainedConfig | str | None = None
+    """绑定的预训练或待训练 Policy 策略配置路径（纯脚本原语为 None）。"""
+
     policy_overwrites: dict = field(default_factory=dict)
+    """策略参数覆盖字典。"""
+
     notes: str | None = None
+    """原语说明备注。"""
+
     is_terminal: bool = False
+    """是否为全局终止原语节点（到达该节点后 Episode 结束）。"""
+
     task_description: str | None = None
+    """任务文字描述（用于语言多模态策略）。"""
+
     target_pose_info_key: str | None = PRIMITIVE_TARGET_POSE_INFO_KEY
+    """发布到 info 字典中的目标位姿键名。"""
 
     def __post_init__(self):
         self._kinematics_solver = {}
@@ -197,16 +314,18 @@ class ManipulationPrimitiveConfig(EnvConfig, ChoiceRegistry):
 
     @property
     def gym_kwargs(self) -> dict:
-        """Extra kwargs forwarded to gym environment creation."""
+        """传递给 Gym 环境创建的可选参数。"""
         return {}
 
     @property
     def is_adaptive(self) -> bool:
+        """检查该原语是否包含由策略网络控制的可学习动作维度。"""
         task_frames = self.task_frame.values() if isinstance(self.task_frame, dict) else [self.task_frame]
         return any(tf.policy_action_dim > 0 for tf in task_frames)
 
     @property
     def num_cameras(self) -> int:
+        """获取当前原语中配置的视觉相机总数量。"""
         if self.features is None:
             return 0
         else:
@@ -219,20 +338,19 @@ class ManipulationPrimitiveConfig(EnvConfig, ChoiceRegistry):
         cameras: dict[str, Camera],
         device: str = "cpu"
     ):
-        """Build one primitive env together with its processors.
+        """工厂方法：根据配置实例化对应的 ManipulationPrimitive 环境实例和动作/观测处理器。
 
         Args:
-            robot_dict: Connected robot handles keyed by primitive robot name.
-            teleop_dict: Connected teleoperators keyed by robot name.
-            cameras: Connected camera handles available to the primitive.
-            device: Torch device used by observation-side processors.
+            robot_dict: 机械臂句柄字典。
+            teleop_dict: 遥操设备句柄字典。
+            cameras: 相机句柄字典。
+            device: 运算设备 ('cuda' 或 'cpu')。
 
         Returns:
-            A tuple of ``(env, env_processor, action_processor)`` ready to be
-            installed into the MP-Net runtime.
+            元组 ``(env, env_processor, action_processor)``。
         """
         self.validate(robot_dict, teleop_dict)
-        self.infer_features(robot_dict, cameras)  # todo: fix initial_features
+        self.infer_features(robot_dict, cameras)
 
         display_cameras = self.processor.image_preprocessing is not None and self.processor.image_preprocessing.display_cameras
         env = ManipulationPrimitive(task_frame=self.task_frame, robot_dict=robot_dict, cameras=cameras, display_cameras=display_cameras)
@@ -603,13 +721,13 @@ class ManipulationPrimitiveConfig(EnvConfig, ChoiceRegistry):
             self.features_map = {key: key for key in self.features}
 
     def on_entry(self, env: ManipulationPrimitive, entry_context: PrimitiveEntryContext | None) -> None:
-        """Initialize env-owned runtime state when the primitive becomes active.
+        """【原语入口期生命周期钩子】：当该原语被状态机激活切入瞬间触发调用。
+
+        负责在进入时将计算得到的初始目标位姿写入 env 运行时状态中。
 
         Args:
-            env: The primitive env that should own all runtime target state for
-                this activation.
-            entry_context: Optional processed observation and prior task-frame
-                origin from the primitive that just terminated.
+            env: 当前原语的底层运行环境实例。
+            entry_context: 上一原语退出时传递过来的上下文对象（包含当时位姿和坐标原点）。
         """
         env.set_target_pose(
             {
@@ -623,15 +741,13 @@ class ManipulationPrimitiveConfig(EnvConfig, ChoiceRegistry):
         self,
         entry_context: PrimitiveEntryContext | None,
     ) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
-        """Resolve start and target poses in this primitive's task frame.
+        """在当前原语的任务坐标系下，解析计算起始位姿 (start_pose) 和目标位姿 (target_pose)。
 
         Args:
-            entry_context: Optional processed observation and prior task-frame
-                origin describing the primitive boundary that just fired.
+            entry_context: 包含上一原语退出时观测与坐标原点的上下文对象。
 
         Returns:
-            A pair ``(start_pose, target_pose)`` where both dictionaries are
-            keyed by robot name and expressed in this primitive's task frame.
+            元组 ``(start_pose, target_pose)``，均为以机械臂名称为键的 6D 位姿字典。
         """
         start_pose: dict[str, list[float]] = {}
         target_pose: dict[str, list[float]] = {}
@@ -644,25 +760,28 @@ class ManipulationPrimitiveConfig(EnvConfig, ChoiceRegistry):
 ManipulationPrimitiveConfig.register_subclass("primitive", ManipulationPrimitiveConfig)
 
 
+# =============================================================================
+# 原语子类 1: 传感器力矩清零/去皮原语 (ZeroFTPrimitiveConfig)
+# =============================================================================
+
 @ManipulationPrimitiveConfig.register_subclass("zero_ft")
 @dataclass
 class ZeroFTPrimitiveConfig(ManipulationPrimitiveConfig):
-    """Scripted primitive that holds the entry pose, re-zeros F/T, and exits.
+    """力传感器清零/去皮纯脚本原语。
 
-    This is a dumb reusable node: entering it always re-zeros the sensor. Whether it
-    is entered at all is a graph decision -- e.g. route through it only on an operator
-    key press (see ``OnEvent``) so a reset while the arm is in lateral contact does not
-    null out the contact load and "stick" the arm to the geometry it was pushed against.
+    进入该原语后保持当前位姿静止，调用力传感器的 zero_ft() 消除重力/安装预紧力偏置，
+    完成后将 primitive_complete 标记为 True 并退出。
     """
 
     settle_duration_s: float = 0.3
+    """清零前的静止等待稳定时间（秒）。"""
 
     def validate(self, robot_dict, teleop_dict):
         super().validate(robot_dict, teleop_dict)
         if self.policy is not None:
-            raise ValueError("zero_ft is scripted-only and must not configure a policy.")
+            raise ValueError("zero_ft 是纯脚本原语，不能配置神经网络策略 policy。")
         if self.settle_duration_s < 0.0:
-            raise ValueError("zero_ft settle_duration_s must be >= 0.")
+            raise ValueError("zero_ft 的 settle_duration_s 必须 >= 0。")
 
     def make(
         self,
@@ -684,32 +803,40 @@ class ZeroFTPrimitiveConfig(ManipulationPrimitiveConfig):
         for robot in env.robot_dict.values():
             controller = getattr(robot, "controller", None)
             if controller is None or not hasattr(controller, "zero_ft"):
-                raise AttributeError("zero_ft primitive requires robots with a controller.zero_ft() method")
+                raise AttributeError("zero_ft 原语要求机械臂控制器具有 controller.zero_ft() 方法。")
             controller.zero_ft()
 
         env._primitive_complete = True
 
 
+# =============================================================================
+# 原语子类 2: 相对增量位移原语 (MoveDeltaPrimitiveConfig)
+# =============================================================================
+
 @ManipulationPrimitiveConfig.register_subclass("move_delta")
 @dataclass
 class MoveDeltaPrimitiveConfig(ManipulationPrimitiveConfig):
-    """Primitive that resolves fixed task-space position axes from an entry-time delta."""
+    """相对增量位移原语：根据进入瞬间的实际位姿叠加指定的 delta 增量计算目标位姿。
+
+    应用场景举例：
+    - 抓取后向上抬升 10cm：设置 delta=[0, 0, 0.1, 0, 0, 0]，delta_frame='world'。
+    - 沿当前工具法向向前推进 2cm：设置 delta=[0, 0, 0.02, 0, 0, 0]，delta_frame='ee'。
+    - 保持当前 X/Y 平面位置，唯独下落到固定 Z 高度：设置 delta=[0,0,0,0,0,0], absolute_axes=['z']。
+    """
 
     delta: list[float] | dict[str, list[float]] = field(default_factory=lambda: [0.0] * 6)
+    """要施加的 6D 相对位姿增量 [dx, dy, dz, drx, dry, drz]。"""
+
     delta_frame: Literal["world", "ee"] | dict[str, Literal["world", "ee_current"]] = "world"
-    # Axes that skip delta resolution and keep the task frame's configured (absolute)
-    # target instead, e.g. absolute_axes=["z", "rx", "ry", "rz"] with delta=0 moves
-    # straight down to a fixed z/orientation while holding the entry x/y.
+    """delta 增量所参考的坐标系：'world'（世界坐标系）或 'ee'（机械臂当前末端法兰坐标系）。"""
+
     absolute_axes: list[int | str] | dict[str, list[int | str]] = field(default_factory=list)
+    """跳过 delta 增量计算、直接使用配置中固定绝对目标的轴列表（如 ['z']）。"""
+
     publish_target_info: bool | dict[str, bool] = True
+    """是否将计算出的目标位姿发布到 info 字典中供 OnTargetPoseReached 检测。"""
 
     def validate(self, robot_dict, teleop_dict):
-        """Validate move-delta-specific config fields.
-
-        Args:
-            robot_dict: Connected robot handles keyed by robot name.
-            teleop_dict: Connected teleoperator handles keyed by robot name.
-        """
         super().validate(robot_dict, teleop_dict)
         robot_names = list(robot_dict)
         self.delta = copy_per_robot(self.delta, robot_names)
@@ -719,19 +846,13 @@ class MoveDeltaPrimitiveConfig(ManipulationPrimitiveConfig):
 
         for name, frame in self.task_frame.items():
             if frame.space != ControlSpace.TASK:
-                raise ValueError(f"move_delta primitives require TASK-space task frames, got '{name}'.")
+                raise ValueError(f"move_delta 原语要求 TASK 笛卡尔空间，实际为 '{name}'。")
             if len(self.delta[name]) != 6:
-                raise ValueError(f"move_delta delta for '{name}' must be a 6-vector.")
+                raise ValueError(f"move_delta 为 '{name}' 配置的 delta 必须是 6 维向量。")
             self.absolute_axes[name] = [axis_to_index(axis) for axis in self.absolute_axes[name]]
 
     def on_entry(self, env: ManipulationPrimitive, entry_context: PrimitiveEntryContext | None) -> None:
-        """Resolve entry-time delta targets and publish them into the env.
-
-        Args:
-            env: Primitive env that should own the resolved runtime target.
-            entry_context: Optional processed observation and previous origin
-                used to interpret the prior primitive pose.
-        """
+        """在进入该原语时，根据进入位姿 + delta 增量计算新目标点，并写入 env。"""
         _start_pose, target_pose = self.resolve_targets(entry_context)
         env.set_target_pose(
             target_pose,
@@ -742,20 +863,7 @@ class MoveDeltaPrimitiveConfig(ManipulationPrimitiveConfig):
         self,
         entry_context: PrimitiveEntryContext | None,
     ) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
-        """Resolve entry-time start and target poses for a move-delta primitive.
-
-        Args:
-            entry_context: Optional processed observation and previous origin
-                describing the pose at the primitive switch boundary.
-
-        Returns:
-            A pair ``(start_pose, target_pose)`` in this primitive's task frame.
-            Fixed ``POS`` axes resolve from ``entry_pose + delta``; learnable,
-            non-``POS``, and ``absolute_axes`` axes keep their configured targets.
-        """
-
-        # start pose (last obs from the previous primitive)
-        # and target pose (what is currently in in the current task frame
+        """计算入口起点位姿以及叠加上 delta 之后的新目标位姿。"""
         start_pose, target_pose = super().resolve_targets(entry_context)
         for name, frame in self.task_frame.items():
             start_world = task_pose_to_world_pose(start_pose[name], frame.origin)
@@ -784,6 +892,7 @@ class MoveDeltaPrimitiveConfig(ManipulationPrimitiveConfig):
 
     @staticmethod
     def _fixed_pos_axes(frame: TaskFrame) -> list[int]:
+        """找出所有非学习的固定位置控制轴。"""
         return [
             axis
             for axis in range(len(frame.target))
@@ -799,6 +908,7 @@ class MoveDeltaPrimitiveConfig(ManipulationPrimitiveConfig):
         delta_frame: str,
         axis: int,
     ) -> float:
+        """对单独一个旋转轴施加旋转增量。"""
         single_axis_delta = [0.0] * 6
         single_axis_delta[axis] = float(delta[axis])
         axis_target_world = compose_delta_pose(
@@ -810,21 +920,22 @@ class MoveDeltaPrimitiveConfig(ManipulationPrimitiveConfig):
         return float(axis_target_task[axis])
 
 
+# =============================================================================
+# 原语子类 3: 开环插值轨迹原语 (OpenLoopTrajectoryPrimitiveConfig)
+# =============================================================================
+
 @ManipulationPrimitiveConfig.register_subclass("open_loop_trajectory")
 @dataclass
 class OpenLoopTrajectoryPrimitiveConfig(ManipulationPrimitiveConfig):
-    """Scripted primitive that samples task-space targets from config-owned logic."""
+    """开环轨迹插值脚本原语：按照设定时长平滑插值执行从起点到目标的完整几何轨迹。"""
 
     trajectory: OpenLoopTrajectorySpec = field(default_factory=OpenLoopTrajectorySpec)
+    """轨迹规划规格（指定 target 或 delta，以及 duration_s 时长）。"""
+
     publish_target_info: bool | dict[str, bool] = True
+    """是否发布目标位姿到 info。"""
 
     def validate(self, robot_dict, teleop_dict):
-        """Validate open-loop-specific constraints.
-
-        Args:
-            robot_dict: Connected robot handles keyed by robot name.
-            teleop_dict: Connected teleoperator handles keyed by robot name.
-        """
         super().validate(robot_dict, teleop_dict)
         robot_names = list(robot_dict)
         self.publish_target_info = copy_per_robot(self.publish_target_info, robot_names)
@@ -836,32 +947,32 @@ class OpenLoopTrajectoryPrimitiveConfig(ManipulationPrimitiveConfig):
             self.trajectory.delta = copy_per_robot(self.trajectory.delta, robot_names)
 
         if (self.trajectory.target is None) == (self.trajectory.delta is None):
-            raise ValueError("open_loop_trajectory requires exactly one of trajectory.target or trajectory.delta.")
+            raise ValueError("open_loop_trajectory 要求 trajectory.target 与 trajectory.delta 二选一且必须指定其中之一。")
         if self.policy is not None:
-            raise ValueError("open_loop_trajectory primitives are scripted-only and must not configure a policy.")
+            raise ValueError("open_loop_trajectory 是纯脚本原语，禁止配置 policy。")
 
         for name, frame in self.task_frame.items():
             if frame.space != ControlSpace.TASK:
-                raise ValueError(f"open_loop_trajectory primitives require TASK-space task frames, got '{name}'.")
+                raise ValueError(f"open_loop_trajectory 原语要求 TASK 笛卡尔空间，实际为 '{name}'。")
             if frame.is_adaptive:
-                raise ValueError(f"open_loop_trajectory primitives must be non-adaptive, got learnable axes for '{name}'.")
+                raise ValueError(f"open_loop_trajectory 原语不能包含学习轴，但在 '{name}' 中发现了学习轴。")
             if any(mode != ControlMode.POS for mode in frame.control_mode):
-                raise ValueError(f"open_loop_trajectory primitives currently require POS task-frame axes for '{name}'.")
+                raise ValueError(f"open_loop_trajectory 原语目前仅支持 POS 位置控制轴，在 '{name}' 中发现非 POS 轴。")
 
             if float(self.trajectory.duration_s[name]) <= 0.0:
-                raise ValueError(f"open_loop_trajectory duration_s for '{name}' must be > 0.")
+                raise ValueError(f"open_loop_trajectory 为 '{name}' 设置的 duration_s 必须 > 0。")
 
             if self.trajectory.target is not None:
                 if len(self.trajectory.target[name]) != 6:
-                    raise ValueError(f"open_loop_trajectory target for '{name}' must be a 6-vector.")
+                    raise ValueError(f"open_loop_trajectory 为 '{name}' 设置的 target 必须是 6 维向量。")
                 if self.trajectory.frame[name] != "task":
-                    raise ValueError("trajectory.target requires trajectory.frame == 'task'.")
+                    raise ValueError("指定 trajectory.target 时，trajectory.frame 必须为 'task'。")
 
             if self.trajectory.delta is not None:
                 if len(self.trajectory.delta[name]) != 6:
-                    raise ValueError(f"open_loop_trajectory delta for '{name}' must be a 6-vector.")
+                    raise ValueError(f"open_loop_trajectory 为 '{name}' 设置的 delta 必须是 6 维向量。")
                 if self.trajectory.frame[name] not in {"world", "ee"}:
-                    raise ValueError("trajectory.delta requires trajectory.frame in {'world', 'ee'}.")
+                    raise ValueError("指定 trajectory.delta 时，trajectory.frame 必须在 {'world', 'ee'} 中。")
 
     def make(
         self,
@@ -870,18 +981,6 @@ class OpenLoopTrajectoryPrimitiveConfig(ManipulationPrimitiveConfig):
         cameras: dict[str, Camera],
         device: str = "cpu",
     ):
-        """Build the scripted open-loop env and its processors.
-
-        Args:
-            robot_dict: Connected robot handles keyed by robot name.
-            teleop_dict: Connected teleoperators keyed by robot name.
-            cameras: Connected camera handles available to the primitive.
-            device: Torch device used by observation-side processors.
-
-        Returns:
-            A tuple of ``(env, env_processor, action_processor)`` where ``env``
-            is the scripted open-loop env subclass for this primitive.
-        """
         self.validate(robot_dict, teleop_dict)
         self.infer_features(robot_dict, cameras)
 
@@ -901,7 +1000,7 @@ class OpenLoopTrajectoryPrimitiveConfig(ManipulationPrimitiveConfig):
         self,
         entry_context: PrimitiveEntryContext | None,
     ) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
-        """Resolve entry pose and final goal pose for one scripted trajectory."""
+        """计算开环插值轨迹的起始点 start_pose 与终点 goal_pose。"""
         start_pose, goal_pose = super().resolve_targets(entry_context)
         for name, frame in self.task_frame.items():
             if self.trajectory.target is not None:
@@ -929,7 +1028,7 @@ class OpenLoopTrajectoryPrimitiveConfig(ManipulationPrimitiveConfig):
         start_pose: dict[str, list[float]],
         goal_pose: dict[str, list[float]],
     ) -> dict[str, list[float]]:
-        """Sample the scripted task-space target pose for the current progress."""
+        """根据当前插值进度 alpha (0.0 -> 1.0) 计算线性插值位姿。"""
         alpha = min(1.0, max(0.0, float(alpha)))
         return {
             name: [
@@ -940,7 +1039,7 @@ class OpenLoopTrajectoryPrimitiveConfig(ManipulationPrimitiveConfig):
         }
 
     def trajectory_timing(self, robot_dict: dict[str, Robot]) -> tuple[int, int]:
-        """Derive internal substep timing from duration and available control rates."""
+        """根据设定时长与底层机械臂的控制频率计算子步步数 (substeps)。"""
         control_hz_candidates: list[float] = []
         for robot in robot_dict.values():
             robot_config = getattr(robot, "config", None)
@@ -956,13 +1055,7 @@ class OpenLoopTrajectoryPrimitiveConfig(ManipulationPrimitiveConfig):
         return total_substeps, substeps_per_step
 
     def on_entry(self, env: ManipulationPrimitive, entry_context: PrimitiveEntryContext | None) -> None:
-        """Seed one scripted open-loop rollout from the primitive entry context.
-
-        Args:
-            env: Primitive env that owns the scripted trajectory runtime state.
-            entry_context: Optional processed observation and previous origin
-                used to interpret the pose at the primitive boundary.
-        """
+        """进入该开环轨迹原语时，根据当前起点与终点初始化轨迹生成器。"""
         start_pose, target_pose = self.resolve_trajectory(entry_context)
         info_key = self.target_pose_info_key if any(self.publish_target_info.values()) else None
         if isinstance(env, OpenLoopTrajectoryPrimitive):

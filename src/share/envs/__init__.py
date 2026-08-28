@@ -1,7 +1,6 @@
-"""Environment package for MP-Net components.
+"""MP-Net 环境核心包。
 
-Keep this module import-light so low-level utilities like ``TaskFrame`` remain
-usable during upstream ``lerobot`` initialization without circular imports.
+采用延迟动态导入 (Lazy import) 保持模块轻量化，避免在 LeRobot 初始化时产生循环引用。
 """
 
 from __future__ import annotations

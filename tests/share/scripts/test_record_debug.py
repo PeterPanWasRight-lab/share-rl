@@ -211,6 +211,22 @@ def test_commit_episode_buffers_uses_dataset_that_received_frames():
     assert reached_limit
 
 
+def test_commit_episode_buffers_discards_failed_demonstration():
+    insert = _FakeDataset()
+    insert.writer.episode_buffer["size"] = 12
+
+    reached_limit = _commit_episode_buffers(
+        {"insert": insert},
+        rerecord=True,
+        num_episodes=1,
+        play_sounds=False,
+    )
+
+    assert insert.writer.episode_buffer["size"] == 0
+    assert insert.num_episodes == 0
+    assert not reached_limit
+
+
 def test_record_main_handles_keyboard_interrupt(monkeypatch):
     monkeypatch.setattr(
         record_module,

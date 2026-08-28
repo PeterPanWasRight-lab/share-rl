@@ -1,0 +1,10 @@
+{
+  "_comment": "UR5e pick-and-insert waypoints in MuJoCo world frame [x, y, z, rx, ry, rz] (xyz euler, rad). Hole centre B = (-0.134, 0.492, 0.08), vertical through-hole (z from 0.02 to 0.14, top at 0.10). Peg pick point A = (-0.25, 0.30, 0.11), a 0.12 m bar standing on the table (tip at z = 0.05, top at z = 0.17). The TCP pinch sits 0.05 m above the peg centre, so the peg tip is 0.11 m below the TCP. Lateral moves happen at the safe height z = 0.28. pre_insert_B and insert_B are biased ~(-1, -6) mm toward the robot base to compensate the peg's +y tip drift during descent; insert_B inserts only ~1/3 of the peg (tip to z = 0.06).",
+  "move_above_A": [-0.25, 0.30, 0.28, 3.141592653589793, 0.0, 1.5707963267948966],
+  "descend_A": [-0.25, 0.30, 0.16, 3.141592653589793, 0.0, 1.5707963267948966],
+  "lift_A": [-0.25, 0.30, 0.28, 3.141592653589793, 0.0, 1.5707963267948966],
+  "move_above_B": [-0.134, 0.492, 0.28, 3.141592653589793, 0.0, 1.5707963267948966],
+  "pre_insert_B": [-0.135, 0.486, 0.19, 3.141592653589793, 0.0, 1.5707963267948966],
+  "insert_B": [-0.135, 0.486, 0.17, 3.141592653589793, 0.0, 1.5707963267948966],
+  "retract_B": [-0.134, 0.492, 0.28, 3.141592653589793, 0.0, 1.5707963267948966]
+}

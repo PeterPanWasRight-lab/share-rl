@@ -214,6 +214,30 @@ function firstTaskFrame(primitive) {
   return entries.length ? entries[0] : ['default', { target: [0, 0, 0, 0, 0, 0], learnable_axes: [] }];
 }
 
+function renamePrimitiveInRaw(oldName, newName) {
+  if (oldName === newName) return;
+  var renamedPrimitives = {};
+  Object.keys(currentRaw.primitives).forEach(function (name) {
+    renamedPrimitives[name === oldName ? newName : name] = currentRaw.primitives[name];
+  });
+  currentRaw.primitives = renamedPrimitives;
+  if (currentRaw.start_primitive === oldName) currentRaw.start_primitive = newName;
+  if (currentRaw.reset_primitive === oldName) currentRaw.reset_primitive = newName;
+  (currentRaw.transitions || []).forEach(function (transition) {
+    if (transition.source === oldName) transition.source = newName;
+    if (transition.target === oldName) transition.target = newName;
+  });
+  ['sel-start-primitive', 'sel-reset-primitive'].forEach(function (id) {
+    var select = byId(id);
+    Array.from(select.options).forEach(function (item) {
+      if (item.value === oldName) {
+        item.value = newName;
+        item.textContent = newName;
+      }
+    });
+  });
+}
+
 function showNodeDetail(data) {
   var primitive = data.primitive;
   var roles = primitive.roles || {};
@@ -226,6 +250,12 @@ function showNodeDetail(data) {
   meta.className = 'detail-meta';
   meta.textContent = primitive.type + ' · ' + (data.adaptive ? 'RL' : '脚本') + (roles.is_start ? ' · 起始' : '') + (roles.is_reset ? ' · 复位' : '');
   panel.appendChild(meta);
+
+  var primitiveName = document.createElement('input');
+  primitiveName.type = 'text';
+  primitiveName.value = primitive.name;
+  primitiveName.maxLength = 64;
+  panel.appendChild(labeledInput('原语名称', primitiveName));
 
   var notes = document.createElement('textarea');
   notes.rows = 3;
@@ -260,6 +290,15 @@ function showNodeDetail(data) {
   actions.className = 'detail-actions';
   actions.append(
     button('保存属性', 'btn-primary', async function () {
+      var nextName = primitiveName.value.trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(nextName)) {
+        showToast('原语名只能使用字母、数字、下划线和连字符', 'error');
+        return;
+      }
+      if (nextName !== primitive.name && currentRaw.primitives[nextName]) {
+        showToast('原语已存在：' + nextName, 'error');
+        return;
+      }
       var rawPrimitive = currentRaw.primitives[primitive.name];
       var rawFrame = rawPrimitive.task_frame.target ? rawPrimitive.task_frame : rawPrimitive.task_frame[frameEntry[0]];
       rawPrimitive.notes = notes.value || null;
@@ -270,6 +309,7 @@ function showNodeDetail(data) {
       var invalidAxes = axisNames.filter(function (name) { return axisOrder.indexOf(name) < 0; });
       if (invalidAxes.length) { showToast('未知轴：' + invalidAxes.join(', '), 'error'); return; }
       rawFrame.policy_mode = axisOrder.map(function (name) { return axisNames.indexOf(name) >= 0 ? 2 : null; });
+      renamePrimitiveInRaw(primitive.name, nextName);
       await saveCurrentConfig();
     }),
     button('删除原语', 'btn-danger', function () { deletePrimitive(primitive.name); })

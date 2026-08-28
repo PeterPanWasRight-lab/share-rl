@@ -1,4 +1,4 @@
-"""Lazy exports for manipulation-primitive-net modules."""
+"""MP-Net 状态机网络模块的延迟动态导出接口。"""
 
 from __future__ import annotations
 

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
+import socket
+from collections import deque
 from dataclasses import replace
 from functools import cached_property
 from pathlib import Path
@@ -19,8 +23,9 @@ from share.envs.manipulation_primitive.task_frame import (
     TASK_FRAME_AXIS_NAMES,
     TaskFrame,
 )
+from share.robots.gripper_command_limiter import GripperCommandLimiter
 from .configuration_mujoco import MujocoRobotConfig
-from .model import ASSET_ROOT, build_ur5e_2f85_model
+from .model import ASSET_ROOT, build_pick_insert_model, build_ur5e_2f85_model
 from .registry import register_robot, unregister_robot
 
 logger = logging.getLogger(__name__)
@@ -65,30 +70,58 @@ class MujocoRobot(Robot):
         self._mujoco = None
         self._viewer = None
         self._renderer_cache: dict[tuple[int, int], Any] = {}
+        self._wrench_history: deque[tuple[float, np.ndarray]] = deque(
+            maxlen=config.viewer_wrench_history_samples
+        )
+        self._last_diagnostics_time = float("-inf")
         self._joint_ids: np.ndarray | None = None
         self._joint_qpos_adr: np.ndarray | None = None
         self._joint_dof_adr: np.ndarray | None = None
         self._arm_actuator_ids: np.ndarray | None = None
         self._tcp_site_id = -1
+        self._force_torque_site_id = -1
         self._peg_tip_site_id = -1
         self._peg_body_id = -1
         self._fixture_body_id = -1
         self._fixture_nominal_pos: np.ndarray | None = None
+        self._domain_randomization_nominal: dict[str, Any] = {}
+        self._domain_randomization_state: dict[str, Any] = {}
         self._sensor_slices: dict[str, slice] = {}
         self._gripper_qpos_adr = -1
         self._gripper_actuator_id = -1
         self._peg_qpos_adr = -1
         self._peg_dof_adr = -1
         self._last_gripper = 0.5
+        self._gripper_command_limiter = GripperCommandLimiter(
+            min_interval_s=config.gripper_min_command_interval_s,
+            clock=lambda: float(self._data.time) if self._data is not None else 0.0,
+        )
         self._virtual_target_task: np.ndarray | None = None
         self._joint_position_target: np.ndarray | None = None
         self._ik_data = None
+        self._god_view_socket_path = os.environ.get(
+            "SHARE_MUJOCO_GOD_VIEW_SOCKET",
+            "/tmp/share_mujoco_god_view.sock",
+        )
+        self._god_view_socket: socket.socket | None = None
+        self._god_view_sequence = 0
+        self._simulation_episode = 0
 
     @property
     def scene_path(self) -> Path:
         if self.config.scene_path:
             return Path(self.config.scene_path).expanduser().resolve()
         return ASSET_ROOT / "scene.xml"
+
+    def _load_model(self):
+        """Build the MuJoCo model from an explicit XML path or a scene builder."""
+        if self.config.scene_path is not None:
+            if not self.scene_path.exists():
+                raise FileNotFoundError(f"MuJoCo scene does not exist: {self.scene_path}")
+            return self._mujoco.MjModel.from_xml_path(str(self.scene_path))
+        if self.config.scene_builder == "pick_insert":
+            return build_pick_insert_model()
+        return build_ur5e_2f85_model()
 
     @property
     def is_connected(self) -> bool:
@@ -136,15 +169,8 @@ class MujocoRobot(Robot):
         except ImportError as exc:
             raise ImportError("Install the MuJoCo backend with `pip install -e '.[mujoco]'`.") from exc
 
-        if not self.scene_path.exists():
-            raise FileNotFoundError(f"MuJoCo scene does not exist: {self.scene_path}")
-
         self._mujoco = mujoco
-        self._model = (
-            build_ur5e_2f85_model()
-            if self.config.scene_path is None
-            else mujoco.MjModel.from_xml_path(str(self.scene_path))
-        )
+        self._model = self._load_model()
         self._model.opt.timestep = self.config.timestep
         self._data = mujoco.MjData(self._model)
         self._ik_data = mujoco.MjData(self._model)
@@ -166,10 +192,11 @@ class MujocoRobot(Robot):
                 if camera_id < 0:
                     raise ValueError(
                         f"Unknown viewer camera {self.config.viewer_camera!r}; "
-                        "expected one of 'front', 'side', or 'wrist'."
+                        "expected one of 'front' or 'wrist'."
                     )
                 self._viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
                 self._viewer.cam.fixedcamid = camera_id
+            self._update_viewer_diagnostics(force=True)
         logger.info("Connected MuJoCo robot %s with scene %s", self.config.id, self.scene_path)
 
     def disconnect(self) -> None:
@@ -181,6 +208,9 @@ class MujocoRobot(Robot):
         for renderer in self._renderer_cache.values():
             renderer.close()
         self._renderer_cache.clear()
+        if self._god_view_socket is not None:
+            self._god_view_socket.close()
+            self._god_view_socket = None
         unregister_robot(self.config.id, self)
         self._data = None
         self._ik_data = None
@@ -195,8 +225,9 @@ class MujocoRobot(Robot):
         return None
 
     def reset_simulation(self, seed: int | None = None) -> None:
-        """Reset physics once per MP-Net episode and randomize the fixture."""
+        """Reset physics and sample one reproducible domain per episode."""
         self._require_connected()
+        self._simulation_episode += 1
         if seed is not None:
             self._rng = np.random.default_rng(seed)
         key_id = self._mujoco.mj_name2id(
@@ -206,19 +237,20 @@ class MujocoRobot(Robot):
             self._mujoco.mj_resetDataKeyframe(self._model, self._data, key_id)
         else:
             self._mujoco.mj_resetData(self._model, self._data)
-
-        if self._fixture_body_id >= 0 and self.config.randomize_fixture_xy > 0:
-            offset = self._rng.uniform(
-                -self.config.randomize_fixture_xy,
-                self.config.randomize_fixture_xy,
-                size=2,
-            )
-            self._model.body_pos[self._fixture_body_id, :2] = self._fixture_nominal_pos[:2] + offset
+        self._apply_domain_randomization()
         self._mujoco.mj_forward(self._model, self._data)
         self._close_gripper_around_peg()
+        self._wrench_history.clear()
+        self._last_diagnostics_time = float("-inf")
         self._last_gripper = 1.0
+        self._gripper_command_limiter.synchronize(self._last_gripper)
         self._joint_position_target = self._data.ctrl[self._arm_actuator_ids].copy()
         self._virtual_target_task = self._world_to_task_pose(self._tcp_world_pose())
+
+    @property
+    def domain_randomization_state(self) -> dict[str, Any]:
+        """Return the sampled episode parameters for manifests and diagnostics."""
+        return json.loads(json.dumps(self._domain_randomization_state))
 
     def set_task_frame(self, frame: TaskFrame) -> None:
         resolved_space = ControlSpace(int(frame.space))
@@ -273,8 +305,12 @@ class MujocoRobot(Robot):
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
         self._require_connected()
+        executed_action = dict(action)
         if f"{GRIPPER_KEY}.pos" in action:
-            self._last_gripper = float(np.clip(action[f"{GRIPPER_KEY}.pos"], 0.0, 1.0))
+            self._last_gripper, _ = self._gripper_command_limiter.filter(
+                float(action[f"{GRIPPER_KEY}.pos"])
+            )
+            executed_action[f"{GRIPPER_KEY}.pos"] = self._last_gripper
 
         control_space = self._space_from_action(action) or self.task_frame.space
         if self._active_control_space is None:
@@ -294,9 +330,49 @@ class MujocoRobot(Robot):
                 self._data.ctrl[self._gripper_actuator_id] = self._last_gripper * 255.0
             self._mujoco.mj_step(self._model, self._data)
 
+        self._publish_god_view_state()
         if self._viewer is not None:
+            self._update_viewer_diagnostics()
             self._viewer.sync()
-        return dict(action)
+        return executed_action
+
+    def _publish_god_view_state(self) -> None:
+        """Publish read-only simulation truth while a local receiver exists."""
+        socket_path = Path(self._god_view_socket_path)
+        if not socket_path.exists():
+            return
+        if self._god_view_socket is None:
+            self._god_view_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+
+        fixture_position = self._data.xpos[self._fixture_body_id].copy()
+        fixture_rotation = self._data.xmat[self._fixture_body_id].reshape(3, 3).copy()
+        peg_tip_position = self._data.site_xpos[self._peg_tip_site_id].copy()
+        tip_fixture = fixture_rotation.T @ (peg_tip_position - fixture_position)
+        depth, lateral_error, axis_alignment = self._insertion_metrics()
+        self._god_view_sequence += 1
+        payload = {
+            "version": 1,
+            "robot_id": self.config.id,
+            "sequence": self._god_view_sequence,
+            "episode": self._simulation_episode,
+            "simulation_time_s": float(self._data.time),
+            "peg_tip_world_m": peg_tip_position.tolist(),
+            "peg_tip_fixture_m": tip_fixture.tolist(),
+            "fixture_position_world_m": fixture_position.tolist(),
+            "fixture_rotation_world": fixture_rotation.tolist(),
+            "tcp_world_pose": self._tcp_world_pose().tolist(),
+            "wrench_sensor": self._sensor_vector().tolist(),
+            "insertion_depth_m": depth,
+            "lateral_error_m": lateral_error,
+            "axis_alignment": axis_alignment,
+        }
+        try:
+            self._god_view_socket.sendto(
+                json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+                str(socket_path),
+            )
+        except OSError as exc:
+            logger.debug("MuJoCo god-view receiver unavailable: %s", exc)
 
     def render_camera(self, camera_name: str, width: int, height: int) -> np.ndarray:
         self._require_connected()
@@ -335,6 +411,11 @@ class MujocoRobot(Robot):
         )
         if self._tcp_site_id < 0:
             raise ValueError("MuJoCo scene is missing the required 'tool_tcp' site")
+        self._force_torque_site_id = self._mujoco.mj_name2id(
+            self._model, self._mujoco.mjtObj.mjOBJ_SITE, "attachment_site"
+        )
+        if self._force_torque_site_id < 0:
+            raise ValueError("MuJoCo scene is missing the force/torque sensor site")
         self._fixture_body_id = self._mujoco.mj_name2id(
             self._model, self._mujoco.mjtObj.mjOBJ_BODY, "fixture"
         )
@@ -379,6 +460,145 @@ class MujocoRobot(Robot):
             address = int(self._model.sensor_adr[sensor_id])
             dimension = int(self._model.sensor_dim[sensor_id])
             self._sensor_slices[name] = slice(address, address + dimension)
+        self._cache_domain_randomization_state()
+
+    def _cache_domain_randomization_state(self) -> None:
+        camera_ids = np.asarray(
+            [
+                self._mujoco.mj_name2id(self._model, self._mujoco.mjtObj.mjOBJ_CAMERA, name)
+                for name in ("front", "wrist")
+            ],
+            dtype=int,
+        )
+        geom_ids = np.asarray(
+            [
+                self._mujoco.mj_name2id(self._model, self._mujoco.mjtObj.mjOBJ_GEOM, name)
+                for name in ("socket-1", "socket-2", "socket-3", "socket-4", "object_red_peg")
+            ],
+            dtype=int,
+        )
+        if np.any(camera_ids < 0) or np.any(geom_ids < 0):
+            raise ValueError("MuJoCo scene is missing domain-randomization camera or geom names")
+        self._domain_randomization_nominal = {
+            "camera_ids": camera_ids,
+            "geom_ids": geom_ids,
+            "fixture_pos": self._model.body_pos[self._fixture_body_id].copy(),
+            "fixture_quat": self._model.body_quat[self._fixture_body_id].copy(),
+            "camera_pos": self._model.cam_pos[camera_ids].copy(),
+            "camera_quat": self._model.cam_quat[camera_ids].copy(),
+            "camera_fovy": self._model.cam_fovy[camera_ids].copy(),
+            "light_diffuse": self._model.light_diffuse.copy(),
+            "light_specular": self._model.light_specular.copy(),
+            "geom_rgba": self._model.geom_rgba[geom_ids].copy(),
+            "geom_friction": self._model.geom_friction[geom_ids].copy(),
+            "peg_mass": float(self._model.body_mass[self._peg_body_id]),
+            "peg_inertia": self._model.body_inertia[self._peg_body_id].copy(),
+        }
+
+    @staticmethod
+    def _rotate_wxyz(quaternion: np.ndarray, local_rotvec: np.ndarray) -> np.ndarray:
+        nominal = Rotation.from_quat(quaternion[[1, 2, 3, 0]])
+        rotated = nominal * Rotation.from_rotvec(local_rotvec)
+        xyzw = rotated.as_quat()
+        return xyzw[[3, 0, 1, 2]]
+
+    def _apply_domain_randomization(self) -> None:
+        nominal = self._domain_randomization_nominal
+        if not nominal:
+            return
+        camera_ids = nominal["camera_ids"]
+        geom_ids = nominal["geom_ids"]
+        self._model.body_pos[self._fixture_body_id] = nominal["fixture_pos"]
+        self._model.body_quat[self._fixture_body_id] = nominal["fixture_quat"]
+        self._model.cam_pos[camera_ids] = nominal["camera_pos"]
+        self._model.cam_quat[camera_ids] = nominal["camera_quat"]
+        self._model.cam_fovy[camera_ids] = nominal["camera_fovy"]
+        self._model.light_diffuse[:] = nominal["light_diffuse"]
+        self._model.light_specular[:] = nominal["light_specular"]
+        self._model.geom_rgba[geom_ids] = nominal["geom_rgba"]
+        self._model.geom_friction[geom_ids] = nominal["geom_friction"]
+        self._model.body_mass[self._peg_body_id] = nominal["peg_mass"]
+        self._model.body_inertia[self._peg_body_id] = nominal["peg_inertia"]
+
+        fixture_offset = np.asarray(
+            [
+                self._rng.uniform(-self.config.randomize_fixture_xy, self.config.randomize_fixture_xy),
+                self._rng.uniform(-self.config.randomize_fixture_xy, self.config.randomize_fixture_xy),
+                self._rng.uniform(-self.config.randomize_fixture_z, self.config.randomize_fixture_z),
+            ]
+        )
+        fixture_yaw_deg = float(
+            self._rng.uniform(-self.config.randomize_fixture_yaw_deg, self.config.randomize_fixture_yaw_deg)
+        )
+        self._model.body_pos[self._fixture_body_id] += fixture_offset
+        self._model.body_quat[self._fixture_body_id] = self._rotate_wxyz(
+            nominal["fixture_quat"], np.deg2rad([fixture_yaw_deg, 0.0, 0.0])
+        )
+
+        camera_position_offsets = self._rng.uniform(
+            -self.config.randomize_camera_position_m,
+            self.config.randomize_camera_position_m,
+            size=(len(camera_ids), 3),
+        )
+        camera_rotation_offsets_deg = self._rng.uniform(
+            -self.config.randomize_camera_rotation_deg,
+            self.config.randomize_camera_rotation_deg,
+            size=(len(camera_ids), 3),
+        )
+        camera_fovy_offsets_deg = self._rng.uniform(
+            -self.config.randomize_camera_fovy_deg,
+            self.config.randomize_camera_fovy_deg,
+            size=len(camera_ids),
+        )
+        self._model.cam_pos[camera_ids] += camera_position_offsets
+        for index, camera_id in enumerate(camera_ids):
+            self._model.cam_quat[camera_id] = self._rotate_wxyz(
+                nominal["camera_quat"][index], np.deg2rad(camera_rotation_offsets_deg[index])
+            )
+        self._model.cam_fovy[camera_ids] = np.clip(
+            nominal["camera_fovy"] + camera_fovy_offsets_deg, 10.0, 120.0
+        )
+
+        light_scales = self._rng.uniform(
+            1.0 - self.config.randomize_light_intensity_fraction,
+            1.0 + self.config.randomize_light_intensity_fraction,
+            size=(self._model.nlight, 1),
+        )
+        self._model.light_diffuse[:] = np.clip(nominal["light_diffuse"] * light_scales, 0.0, 1.0)
+        self._model.light_specular[:] = np.clip(nominal["light_specular"] * light_scales, 0.0, 1.0)
+
+        color_offsets = self._rng.uniform(
+            -self.config.randomize_object_color_fraction,
+            self.config.randomize_object_color_fraction,
+            size=(len(geom_ids), 3),
+        )
+        self._model.geom_rgba[geom_ids, :3] = np.clip(
+            nominal["geom_rgba"][:, :3] + color_offsets, 0.0, 1.0
+        )
+        friction_scales = self._rng.uniform(
+            1.0 - self.config.randomize_contact_friction_fraction,
+            1.0 + self.config.randomize_contact_friction_fraction,
+            size=(len(geom_ids), 1),
+        )
+        self._model.geom_friction[geom_ids] = nominal["geom_friction"] * friction_scales
+        peg_mass_scale = float(
+            self._rng.uniform(
+                1.0 - self.config.randomize_peg_mass_fraction,
+                1.0 + self.config.randomize_peg_mass_fraction,
+            )
+        )
+        self._model.body_mass[self._peg_body_id] = nominal["peg_mass"] * peg_mass_scale
+        self._model.body_inertia[self._peg_body_id] = nominal["peg_inertia"] * peg_mass_scale
+        self._domain_randomization_state = {
+            "fixture_offset_m": fixture_offset.tolist(),
+            "fixture_yaw_deg": fixture_yaw_deg,
+            "camera_position_offsets_m": camera_position_offsets.tolist(),
+            "camera_rotation_offsets_deg": camera_rotation_offsets_deg.tolist(),
+            "camera_fovy_offsets_deg": camera_fovy_offsets_deg.tolist(),
+            "light_scales": light_scales[:, 0].tolist(),
+            "peg_mass_scale": peg_mass_scale,
+            "friction_scales": friction_scales[:, 0].tolist(),
+        }
 
     def _configure_position_servos(self) -> None:
         """Stiffen Menagerie servos while retaining their damping ratio."""
@@ -525,9 +745,134 @@ class MujocoRobot(Robot):
         return velocity, full[:, self._joint_dof_adr]
 
     def _sensor_vector(self) -> np.ndarray:
+        """Return the wrist wrench in world coordinates."""
         force = self._data.sensordata[self._sensor_slices["tcp_force"]]
         torque = self._data.sensordata[self._sensor_slices["tcp_torque"]]
-        return np.concatenate((force, torque)).astype(np.float64, copy=True)
+        # MuJoCo force/torque sensors report vectors in their sensor-site frame.
+        # Observation and viewer consumers expect a spatial vector in world
+        # coordinates before applying their task-frame rotation.
+        sensor_to_world = self._data.site_xmat[self._force_torque_site_id].reshape(3, 3)
+        return np.concatenate(
+            (sensor_to_world @ force, sensor_to_world @ torque)
+        ).astype(np.float64, copy=False)
+
+    def _update_viewer_wrench_overlay(self) -> None:
+        """Display the current task-frame wrist wrench in the passive viewer."""
+        if (
+            self._viewer is None
+            or not self.config.viewer_wrench_overlay
+            or not hasattr(self._viewer, "set_texts")
+        ):
+            return
+        wrench = self._rotate_spatial_to_task(self._sensor_vector())
+        labels = "Wrist F/T (task frame)\nFx\nFy\nFz\nTx\nTy\nTz"
+        values = (
+            "\n"
+            f"{wrench[0]:+8.3f} N\n"
+            f"{wrench[1]:+8.3f} N\n"
+            f"{wrench[2]:+8.3f} N\n"
+            f"{wrench[3]:+8.4f} Nm\n"
+            f"{wrench[4]:+8.4f} Nm\n"
+            f"{wrench[5]:+8.4f} Nm"
+        )
+        self._viewer.set_texts((None, None, labels, values))
+
+    def _update_viewer_diagnostics(self, *, force: bool = False) -> None:
+        """Refresh global/wrist cameras and rolling wrench plots in the viewer."""
+        if self._viewer is None:
+            return
+        wrench = self._rotate_spatial_to_task(self._sensor_vector())
+        self._wrench_history.append((float(self._data.time), wrench))
+        self._update_viewer_wrench_overlay()
+
+        update_period = 1.0 / self.config.viewer_diagnostics_fps
+        if not force and self._data.time - self._last_diagnostics_time < update_period:
+            return
+        self._last_diagnostics_time = float(self._data.time)
+        panel_width = min(
+            self.config.viewer_diagnostics_width,
+            max(160, int(self._viewer.viewport.width) // 3),
+        )
+        camera_height = round(panel_width * 3 / 4)
+        plot_height = max(100, camera_height // 2)
+        margin = 8
+        panel_left = max(0, int(self._viewer.viewport.width) - panel_width - margin)
+        camera_bottom = max(0, int(self._viewer.viewport.height) - camera_height - margin)
+
+        if hasattr(self._viewer, "set_images"):
+            camera_images = []
+            if self.config.viewer_front_camera_overlay:
+                front_left = max(0, panel_left - panel_width - margin)
+                front_image = self.render_camera("front", panel_width, camera_height)
+                camera_images.append(
+                    (
+                        self._mujoco.MjrRect(
+                            front_left, camera_bottom, panel_width, camera_height
+                        ),
+                        front_image,
+                    )
+                )
+            if self.config.viewer_wrist_camera_overlay:
+                wrist_image = self.render_camera("wrist", panel_width, camera_height)
+                camera_images.append(
+                    (
+                        self._mujoco.MjrRect(
+                            panel_left, camera_bottom, panel_width, camera_height
+                        ),
+                        wrist_image,
+                    )
+                )
+            if camera_images:
+                self._viewer.set_images(camera_images)
+
+        if self.config.viewer_wrench_plot and hasattr(self._viewer, "set_figures"):
+            force_bottom = max(margin + plot_height, camera_bottom - plot_height - margin)
+            torque_bottom = max(margin, force_bottom - plot_height - margin)
+            force_figure = self._make_wrench_figure("Wrist force (N)", ("Fx", "Fy", "Fz"), 0)
+            torque_figure = self._make_wrench_figure(
+                "Wrist torque (Nm)", ("Tx", "Ty", "Tz"), 3
+            )
+            self._viewer.set_figures(
+                [
+                    (
+                        self._mujoco.MjrRect(
+                            panel_left, force_bottom, panel_width, plot_height
+                        ),
+                        force_figure,
+                    ),
+                    (
+                        self._mujoco.MjrRect(
+                            panel_left, torque_bottom, panel_width, plot_height
+                        ),
+                        torque_figure,
+                    ),
+                ]
+            )
+
+    def _make_wrench_figure(
+        self, title: str, channel_names: tuple[str, str, str], channel_offset: int
+    ):
+        """Build one three-channel oscilloscope-style MuJoCo figure."""
+        figure = self._mujoco.MjvFigure()
+        figure.title = title
+        figure.xlabel = "simulation time (s)"
+        figure.flg_extend = 0
+        samples = list(self._wrench_history)
+        times = np.asarray([sample[0] for sample in samples], dtype=np.float32)
+        values = np.asarray([sample[1] for sample in samples], dtype=np.float32)
+        time_span = max(self.config.control_dt, float(times[-1] - times[0]))
+        figure.range[0] = [float(times[-1] - time_span), float(times[-1])]
+        selected_values = values[:, channel_offset : channel_offset + 3]
+        minimum_span = 1.0 if channel_offset == 0 else 0.1
+        amplitude = max(minimum_span, float(np.max(np.abs(selected_values))) * 1.1)
+        figure.range[1] = [-amplitude, amplitude]
+        for line_index, channel_name in enumerate(channel_names):
+            figure.linename[line_index] = channel_name.encode("ascii")
+            figure.linepnt[line_index] = len(times)
+            figure.linedata[line_index, : 2 * len(times)] = np.column_stack(
+                (times, selected_values[:, line_index])
+            ).ravel()
+        return figure
 
     def _insertion_metrics(self) -> tuple[float, float, float]:
         """Return peg-tip depth, lateral error, and peg/socket axis alignment."""

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SHaRe-RL 实验控制台</title>
-  <link rel="stylesheet" href="/static/console.css?v=20260827-cold-start" />
+  <link rel="stylesheet" href="/static/console.css?v=20260827-actor-hz" />
 </head>
 <body>
   <aside class="sidebar">
@@ -89,6 +89,7 @@
         <article class="panel service-card" data-role="actor">
           <div class="service-title"><div class="service-icon actor">A</div><div><h3>Actor</h3><p>环境交互、推理、发送 transition</p></div><span class="status-pill">已停止</span></div>
           <dl><div><dt>PID</dt><dd data-value="pid">—</dd></div><div><dt>运行时间</dt><dd data-value="uptime">—</dd></div><div><dt>退出码</dt><dd data-value="exit">—</dd></div></dl>
+          <aside class="actor-timing"><div><span>CONTROL LOOP</span><strong id="actor-loop-hz">—</strong><small id="actor-loop-ms">等待 Actor</small></div><div><span>POLICY</span><strong id="actor-policy-hz">—</strong><small id="actor-policy-ms">推理频率</small></div><div><span>PRIMITIVE</span><strong id="actor-timing-primitive">—</strong><small id="actor-timing-time">尚无采样</small></div></aside>
           <div class="button-row"><button class="primary start-service" data-role="actor">启动 Actor</button><button class="danger stop-service" data-role="actor">停止</button></div>
           <div class="log-toolbar"><span>Actor 日志</span><div><label>显示 <select class="log-lines" data-log-kind="actor"><option>50</option><option>100</option><option selected>200</option><option>500</option><option>1000</option><option>2000</option></select> 行</label><button type="button" class="text-button copy-log" data-copy-target="actor-log">复制</button><button type="button" class="text-button clear-log" data-log-kind="actor">清空</button></div></div>
           <pre class="log-box" id="actor-log" data-log="actor">尚无日志</pre>
@@ -111,7 +112,7 @@
         <div class="button-row"><button class="primary" id="start-viewer-example">保存并运行 Viewer</button><button class="danger" id="stop-viewer-example" disabled>停止</button></div>
       </article>
       <div class="editor-shell">
-        <iframe id="editor-frame" title="MP-Net 状态机编辑器" src="/editor"></iframe>
+        <iframe id="editor-frame" title="MP-Net 状态机编辑器" src="/editor?v=20260828-primitive-rename"></iframe>
         <details class="viewer-log"><summary>试运行日志</summary><div class="log-toolbar"><span>Viewer 日志</span><div><label>显示 <select class="log-lines" data-log-kind="viewer"><option>50</option><option>100</option><option selected>200</option><option>500</option><option>1000</option><option>2000</option></select> 行</label><button type="button" class="text-button copy-log" data-copy-target="viewer-example-log">复制</button><button type="button" class="text-button clear-log" data-log-kind="viewer">清空</button></div></div><pre id="viewer-example-log">尚无日志</pre></details>
       </div>
     </section>
@@ -141,6 +142,6 @@
     </section>
   </main>
   <div id="toast" class="toast"></div>
-  <script src="/static/console.js?v=20260827-cold-start"></script>
+  <script src="/static/console.js?v=20260827-actor-hz"></script>
 </body>
 </html>

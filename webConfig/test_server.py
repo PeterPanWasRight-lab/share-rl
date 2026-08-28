@@ -114,6 +114,44 @@ class ServerApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         clear.assert_called_once_with()
 
+    def test_actor_timing_metric_endpoint(self):
+        timing = {
+            "available": True,
+            "primitive": "insert",
+            "loop_hz": 5.7,
+            "loop_ms": 175.4,
+            "policy_hz": 190.0,
+            "policy_ms": 5.3,
+            "timestamp": "2026-08-27 22:22:33",
+        }
+        with patch.object(self.server, "fetch_actor_timing", return_value=timing):
+            response = self.client.get("/api/console/actor-timing")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), timing)
+
+    def test_actor_timing_reads_latest_debug_sample(self):
+        original_repo_root = self.runtime.REPO_ROOT
+        project = Path(self.temporary.name)
+        self.runtime.REPO_ROOT = project
+        try:
+            profile = dict(self.runtime.DEFAULT_PROFILE)
+            log_path = project / profile["output_root"] / "logs" / f"actor_{profile['job_name']}.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                "DEBUG 2026-08-27 22:22:32 ing_utils.py:30 [ACTOR] primitive=insert "
+                "loop=189.79ms (5.3hz) policy= 5.29ms (189.0hz)\n"
+                "DEBUG 2026-08-27 22:22:33 ing_utils.py:30 [ACTOR] primitive=insert "
+                "loop=180.19ms (5.5hz) policy= 5.63ms (177.8hz)\n",
+                encoding="utf-8",
+            )
+            timing = self.runtime.fetch_actor_timing(profile)
+            self.assertTrue(timing["available"])
+            self.assertEqual(timing["loop_hz"], 5.5)
+            self.assertEqual(timing["policy_hz"], 177.8)
+            self.assertEqual(timing["timestamp"], "2026-08-27 22:22:33")
+        finally:
+            self.runtime.REPO_ROOT = original_repo_root
+
     def test_asset_discovery_and_role_specific_policy_paths(self):
         original_repo_root = self.runtime.REPO_ROOT
         project = Path(self.temporary.name)
@@ -284,6 +322,32 @@ class ServerApiTest(unittest.TestCase):
         saved = self.client.put("/api/configs/demo", json=raw)
         self.assertEqual(saved.status_code, 200)
         self.assertEqual(saved.get_json()["summary"]["fps"], 25)
+
+    def test_primitive_rename_round_trip_updates_all_references(self):
+        raw = self.create("rename_demo")["raw"]
+        raw["primitives"]["finish"] = json.loads(json.dumps(raw["primitives"]["main"]))
+        raw["primitives"]["main"]["is_terminal"] = False
+        raw["primitives"]["finish"]["is_terminal"] = True
+        raw["transitions"] = [{
+            "type": "always",
+            "source": "main",
+            "target": "finish",
+            "additional_reward": 0,
+            "reason": None,
+        }]
+        raw["primitives"]["approach"] = raw["primitives"].pop("main")
+        raw["start_primitive"] = "approach"
+        raw["reset_primitive"] = "approach"
+        raw["transitions"][0]["source"] = "approach"
+
+        response = self.client.put("/api/configs/rename_demo", json=raw)
+
+        self.assertEqual(response.status_code, 200)
+        summary = response.get_json()["summary"]
+        self.assertEqual(summary["start_primitive"], "approach")
+        self.assertEqual(summary["reset_primitive"], "approach")
+        self.assertEqual(summary["transitions"][0]["source"], "approach")
+        self.assertEqual({item["name"] for item in summary["primitives"]}, {"approach", "finish"})
 
     def test_structured_edit(self):
         self.create()

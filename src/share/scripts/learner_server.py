@@ -5,6 +5,8 @@ import os
 import queue
 import shutil
 import time
+import copy
+import json
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -25,7 +27,7 @@ from lerobot.rl.process import ProcessSignalHandler
 from lerobot.rl.wandb_utils import WandBLogger
 from lerobot.transport import services_pb2_grpc
 from lerobot.transport.utils import MAX_MESSAGE_SIZE, bytes_to_python_object, bytes_to_transitions, state_to_bytes
-from lerobot.utils.constants import ACTION, DONE, REWARD, TRAINING_STATE_DIR
+from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD, TRAINING_STATE_DIR
 from lerobot.utils.random_utils import set_seed
 from lerobot.utils.train_utils import (
     CHECKPOINTS_DIR,
@@ -43,6 +45,8 @@ from share.envs.manipulation_primitive_net.env_manipulation_primitive_net import
     ManipulationPrimitiveNet,
 )
 from share.policies.sac_dagger import SACDaggerBCPolicy
+from share.rl.buffer_metrics import build_replay_metrics
+from share.rl.replay_dashboard import ReplayDashboardServer
 from share.rl.runtime import (
     build_adaptive_registry,
     make_policy_processors,
@@ -62,6 +66,7 @@ def train_cli(cfg: MPNetTrainRLServerPipelineConfig):
 
 def run_learner(cfg: MPNetTrainRLServerPipelineConfig, shutdown_event: Any | None = None) -> dict[str, Any]:
     registry = build_adaptive_registry(cfg.env)
+    _apply_external_dataset_stats(cfg=cfg, registry=registry)
     is_threaded = _use_threads(registry.actor_learner_policy_cfg)
 
     if not is_threaded:
@@ -175,6 +180,11 @@ def add_actor_information_and_train(
     with suppress_logging():
         mp_net = ManipulationPrimitiveNet(cfg.env)
         try:
+            for primitive_id in registry.adaptive_ids:
+                adapt_legacy_xyz_gripper_policy_stats(
+                    policy_cfg=registry.policy_cfgs[primitive_id],
+                    env_features=cfg.env.primitives[primitive_id].features,
+                )
             policies = make_policies_for_registry(cfg.env, registry, train_mode=True)
             # Reuse the exact same policy preprocessor stack as the actor so replay
             # training and live inference see identically normalized inputs.
@@ -211,6 +221,16 @@ def add_actor_information_and_train(
     optimization_steps = resume_optimization_steps or {primitive_id: 0 for primitive_id in registry.adaptive_ids}
     interaction_step_offset = resume_interaction_steps or {primitive_id: 0 for primitive_id in registry.adaptive_ids}
     last_interaction_messages: dict[str, dict[str, Any]] = {}
+    replay_dashboard = None
+    if cfg.replay_dashboard_enable:
+        try:
+            replay_dashboard = ReplayDashboardServer(cfg.replay_dashboard_host, cfg.replay_dashboard_port)
+            replay_dashboard.start()
+            dashboard_host, dashboard_port = replay_dashboard.address
+            logging.info("[LEARNER] Replay dashboard: http://%s:%s", dashboard_host, dashboard_port)
+        except OSError as exc:
+            logging.warning("[LEARNER] Replay dashboard disabled: %s", exc)
+    last_replay_metrics_t = 0.0
 
     push_all_actor_policies_to_queue(parameters_queue, policies)
     last_push_t = time.time()
@@ -231,6 +251,16 @@ def add_actor_information_and_train(
             interaction_step_offset=interaction_step_offset,
             last_messages=last_interaction_messages,
         )
+        now = time.time()
+        if replay_dashboard is not None and now - last_replay_metrics_t >= 1.0:
+            replay_dashboard.update(
+                build_replay_metrics(
+                    online_buffers=replay_buffers,
+                    offline_buffers=offline_replay_buffers,
+                    optimization_steps=optimization_steps,
+                )
+            )
+            last_replay_metrics_t = now
 
         did_optimize = False
         for primitive_id in registry.adaptive_ids:
@@ -239,14 +269,21 @@ def add_actor_information_and_train(
                 continue
 
             replay_buffer = replay_buffers[primitive_id]
-            is_dagger_bc_policy = isinstance(policy, SACDaggerBCPolicy)
+            is_dagger_bc_policy = _uses_bc_updates(policy)
             offline_replay_buffer = offline_replay_buffers.get(primitive_id)
 
             if is_dagger_bc_policy:
                 if offline_replay_buffer is None or len(offline_replay_buffer) == 0:
                     continue
-            elif len(replay_buffer) < policy.config.online_step_before_learning:
-                continue
+            else:
+                if len(replay_buffer) < policy.config.online_step_before_learning:
+                    continue
+                if (
+                    getattr(policy.config, "limit_updates_to_online_transitions", True)
+                    and optimization_steps[primitive_id]
+                    >= _unlocked_sac_update_count(policy, len(replay_buffer))
+                ):
+                    continue
 
             online_batch_size = cfg.batch_size
             if offline_replay_buffer is not None and len(offline_replay_buffer) > 0 and not is_dagger_bc_policy:
@@ -340,6 +377,15 @@ def add_actor_information_and_train(
         if not did_optimize:
             time.sleep(0.01)
 
+    if replay_dashboard is not None:
+        replay_dashboard.update(
+            build_replay_metrics(
+                online_buffers=replay_buffers,
+                offline_buffers=offline_replay_buffers,
+                optimization_steps=optimization_steps,
+            )
+        )
+        replay_dashboard.close()
     shutdown_event.set()
     return {"optimization_steps": optimization_steps}
 
@@ -356,6 +402,11 @@ def optimize_policy_once(
     clip_grad_norm_value = policy.config.grad_clip_norm
     utd_ratio = max(1, int(policy.config.utd_ratio))
     policy_update_freq = max(1, int(policy.config.policy_update_freq))
+    actor_update_after = max(0, int(getattr(policy.config, "actor_update_after", 0)))
+    sac_bc_loss_weight = max(0.0, float(getattr(policy.config, "sac_bc_loss_weight", 0.0)))
+    freeze_shared_encoder = bool(
+        getattr(policy.config, "freeze_shared_encoder_during_sac", False)
+    )
 
     training_infos: dict[str, float] = {}
     if use_bc_update:
@@ -393,10 +444,16 @@ def optimize_policy_once(
         if forward_batch is None:
             continue
 
+        update_index = optimization_step + utd_step
+        actor_is_frozen = not _should_update_actor(
+            update_index=update_index, actor_update_after=actor_update_after
+        )
         critic_output = policy.forward(forward_batch, model="critic")
         loss_critic = critic_output["loss_critic"]
         optimizers["critic"].zero_grad()
         loss_critic.backward()
+        if actor_is_frozen or freeze_shared_encoder:
+            _clear_module_gradients(policy.actor)
         critic_grad_norm = torch.nn.utils.clip_grad_norm_(
             parameters=policy.critic_ensemble.parameters(),
             max_norm=clip_grad_norm_value,
@@ -419,18 +476,27 @@ def optimize_policy_once(
             training_infos["loss_discrete_critic"] = float(loss_discrete_critic.item())
             training_infos["discrete_critic_grad_norm"] = float(discrete_critic_grad_norm)
 
-        if (optimization_step + utd_step) % policy_update_freq == 0:
-            actor_output = policy.forward(forward_batch, model="actor")
-            loss_actor = actor_output["loss_actor"]
-            optimizers["actor"].zero_grad()
-            loss_actor.backward()
-            actor_grad_norm = torch.nn.utils.clip_grad_norm_(
-                parameters=policy.actor.parameters(),
-                max_norm=clip_grad_norm_value,
-            ).item()
-            optimizers["actor"].step()
-            training_infos["loss_actor"] = float(loss_actor.item())
-            training_infos["actor_grad_norm"] = float(actor_grad_norm)
+        if update_index % policy_update_freq == 0:
+            training_infos["actor_frozen"] = float(actor_is_frozen)
+            if not actor_is_frozen:
+                actor_output = policy.forward(forward_batch, model="actor")
+                loss_actor = actor_output["loss_actor"]
+                if sac_bc_loss_weight > 0:
+                    bc_output = policy.forward(forward_batch, model="bc")
+                    loss_bc_anchor = bc_output["loss_bc"]
+                    loss_actor = loss_actor + sac_bc_loss_weight * loss_bc_anchor
+                    training_infos["loss_bc_anchor"] = float(loss_bc_anchor.item())
+                optimizers["actor"].zero_grad()
+                loss_actor.backward()
+                if freeze_shared_encoder:
+                    _clear_module_gradients(policy.actor.encoder)
+                actor_grad_norm = torch.nn.utils.clip_grad_norm_(
+                    parameters=policy.actor.parameters(),
+                    max_norm=clip_grad_norm_value,
+                ).item()
+                optimizers["actor"].step()
+                training_infos["loss_actor"] = float(loss_actor.item())
+                training_infos["actor_grad_norm"] = float(actor_grad_norm)
 
             temperature_output = policy.forward(forward_batch, model="temperature")
             loss_temperature = temperature_output["loss_temperature"]
@@ -469,14 +535,26 @@ def prepare_forward_batch(
         next_observations=next_observations,
     )
 
+    if (
+        isinstance(policy, SACDaggerBCPolicy)
+        and policy.config.training_mode == "sac"
+    ):
+        observations = policy.augment_observations(observations)
+        next_observations = policy.augment_observations(next_observations)
+
     if check_nan_in_transition(observations=observations, actions=actions, next_state=next_observations):
         return None
 
-    observation_features, next_observation_features = get_observation_features(
-        policy=policy,
-        observations=observations,
-        next_observations=next_observations,
-    )
+    image_keys = tuple(getattr(policy.actor.encoder, "image_keys", ()) or ())
+    if image_keys:
+        observation_features, next_observation_features = get_observation_features(
+            policy=policy,
+            observations=observations,
+            next_observations=next_observations,
+        )
+    else:
+        observation_features = None
+        next_observation_features = None
 
     return {
         ACTION: actions,
@@ -504,11 +582,14 @@ def make_optimizers(policy: SACPolicy) -> dict[str, Optimizer]:
     actor_lr = getattr(policy.config, "bc_lr", None)
     if actor_lr is None:
         actor_lr = policy.config.actor_lr
+    # Pure BC has no critic update to train a shared observation encoder, so its
+    # actor optimizer must own the encoder parameters as well.
+    include_actor_encoder = _uses_bc_updates(policy)
     optimizer_actor = torch.optim.Adam(
         params=[
             p
             for n, p in policy.actor.named_parameters()
-            if not policy.config.shared_encoder or not n.startswith("encoder")
+            if include_actor_encoder or not policy.config.shared_encoder or not n.startswith("encoder")
         ],
         lr=actor_lr,
     )
@@ -525,6 +606,27 @@ def make_optimizers(policy: SACPolicy) -> dict[str, Optimizer]:
             lr=policy.config.critic_lr,
         )
     return optimizers
+
+
+def _unlocked_sac_update_count(policy: SACPolicy, online_replay_size: int) -> int:
+    """Allow at most one SAC optimizer call per online transition after warmup."""
+    warmup = max(1, int(policy.config.online_step_before_learning))
+    return max(0, int(online_replay_size) - warmup + 1)
+
+
+def _clear_module_gradients(module: torch.nn.Module) -> None:
+    """Prevent a shared optimizer from mutating a frozen module."""
+    for parameter in module.parameters():
+        parameter.grad = None
+
+
+def _should_update_actor(*, update_index: int, actor_update_after: int) -> bool:
+    """Keep the actor frozen until the configured critic warm-up is complete."""
+    return int(update_index) >= max(0, int(actor_update_after))
+
+
+def _uses_bc_updates(policy: SACPolicy) -> bool:
+    return isinstance(policy, SACDaggerBCPolicy) and policy.config.training_mode == "bc"
 
 
 def push_all_actor_policies_to_queue(parameters_queue: Queue, policies: dict[str, SACPolicy]) -> None:
@@ -605,7 +707,11 @@ def initialize_replay_buffers(
         if cfg.resume and dataset_root.exists():
             repo_id = _dataset_repo_id(cfg=cfg, primitive_id=primitive_id)
             logging.info("[LEARNER] Loading online replay for primitive '%s' from %s", primitive_id, dataset_root)
-            dataset = LeRobotDataset(repo_id=repo_id, root=str(dataset_root))
+            dataset = LeRobotDataset(
+                repo_id=repo_id,
+                root=str(dataset_root),
+                video_backend=_dataset_video_backend(cfg),
+            )
             replay_buffers[primitive_id] = ReplayBuffer.from_lerobot_dataset(
                 lerobot_dataset=dataset,
                 capacity=policy.config.online_buffer_capacity,
@@ -673,6 +779,70 @@ def _extract_intervention_transitions(
     return copied
 
 
+def _stream_replay_buffer_from_lerobot_dataset(
+    *,
+    lerobot_dataset: LeRobotDataset,
+    capacity: int,
+    device: str,
+    storage_device: str,
+    state_keys: Any,
+) -> ReplayBuffer:
+    """Load ordered samples without materializing duplicate next-image transitions."""
+    frame_count = min(len(lerobot_dataset), capacity)
+    if frame_count <= 0:
+        raise ValueError("Cannot build a BC replay buffer from an empty dataset.")
+
+    keys = tuple(state_keys)
+    replay_buffer = ReplayBuffer(
+        capacity=capacity,
+        device=device,
+        storage_device=storage_device,
+        state_keys=keys,
+        optimize_memory=True,
+    )
+    first_sample = lerobot_dataset[0]
+    has_done_key = DONE in first_sample
+
+    for frame_index in range(frame_count):
+        sample = first_sample if frame_index == 0 else lerobot_dataset[frame_index]
+        state = {key: sample[key].unsqueeze(0) for key in keys}
+        action = sample[ACTION].unsqueeze(0)
+        reward = float(sample[REWARD].item())
+        if has_done_key:
+            done = bool(sample[DONE].item())
+        else:
+            done = frame_index == frame_count - 1
+            if not done:
+                next_sample = lerobot_dataset[frame_index + 1]
+                done = bool(next_sample["episode_index"] != sample["episode_index"])
+
+        # In an optimized ReplayBuffer, next_state[i] is read from state[i + 1].
+        # Dataset frames are ordered within episodes, and terminal transitions do
+        # not bootstrap, so no second multi-gigabyte image allocation is needed.
+        replay_buffer.add(
+            state=state,
+            action=action,
+            reward=reward,
+            next_state=state,
+            done=done,
+            truncated=done,
+        )
+        if (frame_index + 1) % 5_000 == 0 or frame_index + 1 == frame_count:
+            logging.info(
+                "[LEARNER] Stream-loaded %d/%d demo transitions.",
+                frame_index + 1,
+                frame_count,
+            )
+
+    return replay_buffer
+
+
+# Preserve the private helper name used by lightweight downstream tests.
+_stream_bc_replay_buffer_from_lerobot_dataset = (
+    _stream_replay_buffer_from_lerobot_dataset
+)
+
+
 def initialize_offline_replay_buffers(
     *,
     cfg: MPNetTrainRLServerPipelineConfig,
@@ -684,13 +854,15 @@ def initialize_offline_replay_buffers(
     for primitive_id, policy in policies.items():
         capacity = policy.config.offline_buffer_capacity
         state_keys = policy.config.input_features.keys()
+        is_dagger_bc_policy = _uses_bc_updates(policy)
+        is_sac_dagger_policy = isinstance(policy, SACDaggerBCPolicy)
 
         offline_buffer = ReplayBuffer(
             capacity=capacity,
             device=device,
             storage_device=storage_device,
             state_keys=state_keys,
-            optimize_memory=False,
+            optimize_memory=is_dagger_bc_policy,
         )
 
         # Phase A: resume — reconstruct intervention corrections from on-policy dataset
@@ -712,7 +884,11 @@ def initialize_offline_replay_buffers(
                     primitive_id,
                     online_dataset_root,
                 )
-                online_dataset = LeRobotDataset(repo_id=repo_id, root=str(online_dataset_root))
+                online_dataset = LeRobotDataset(
+                    repo_id=repo_id,
+                    root=str(online_dataset_root),
+                    video_backend=_dataset_video_backend(cfg),
+                )
                 temp_buffer = ReplayBuffer.from_lerobot_dataset(
                     lerobot_dataset=online_dataset,
                     capacity=len(online_dataset),
@@ -739,15 +915,44 @@ def initialize_offline_replay_buffers(
                     primitive_id,
                     external_root,
                 )
-                demo_dataset = LeRobotDataset(repo_id=repo_id, root=str(external_root))
-                demo_buffer = ReplayBuffer.from_lerobot_dataset(
-                    lerobot_dataset=demo_dataset,
-                    capacity=min(len(demo_dataset), remaining),
-                    device=device,
-                    storage_device=storage_device,
-                    state_keys=state_keys,
-                    optimize_memory=False,
+                demo_dataset = LeRobotDataset(
+                    repo_id=repo_id,
+                    root=str(external_root),
+                    video_backend=_dataset_video_backend(cfg),
                 )
+                demo_dataset = adapt_legacy_xyz_gripper_dataset(demo_dataset, policy)
+                demo_capacity = min(len(demo_dataset), remaining)
+                if is_sac_dagger_policy:
+                    demo_buffer = _stream_replay_buffer_from_lerobot_dataset(
+                        lerobot_dataset=demo_dataset,
+                        capacity=demo_capacity,
+                        device=device,
+                        storage_device=storage_device,
+                        state_keys=state_keys,
+                    )
+                else:
+                    demo_buffer = ReplayBuffer.from_lerobot_dataset(
+                        lerobot_dataset=demo_dataset,
+                        capacity=demo_capacity,
+                        device=device,
+                        storage_device=storage_device,
+                        state_keys=state_keys,
+                        optimize_memory=False,
+                    )
+                # A fresh offline-only run has no resumed interventions to merge. Reuse the
+                # dataset-backed buffer directly instead of allocating and filling a second
+                # full copy. This matters for image observations, where two state/next-state
+                # buffers can otherwise exhaust host memory before the first update.
+                if len(offline_buffer) == 0:
+                    offline_buffer = demo_buffer
+                    logging.info(
+                        "[LEARNER] Reusing external demo buffer directly for '%s' (%d transitions)",
+                        primitive_id,
+                        len(offline_buffer),
+                    )
+                    offline_replay_buffers[primitive_id] = offline_buffer
+                    continue
+
                 # Copy all demo transitions (no intervention filter needed for pre-collected demos)
                 size = len(demo_buffer)
                 for logical_idx in range(size - 1, -1, -1):
@@ -776,6 +981,195 @@ def initialize_offline_replay_buffers(
     return offline_replay_buffers
 
 
+_LEGACY_WRENCH_SIGN_FLIP_INDICES = (25, 26, 28, 29)
+
+
+
+class _ProjectedDataset:
+    """Project legacy features and optionally stack state within episode boundaries."""
+
+    def __init__(
+        self,
+        dataset: Any,
+        target_dims: dict[str, int],
+        *,
+        source_state_dim: int | None = None,
+    ):
+        self._dataset = dataset
+        self._target_dims = target_dims
+        self._source_state_dim = source_state_dim
+
+    def __len__(self) -> int:
+        return len(self._dataset)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        sample = dict(self._dataset[index])
+        for key, target_dim in self._target_dims.items():
+            if key == OBS_STATE:
+                value = self._project_state(sample[OBS_STATE])
+                base_dim = int(value.shape[-1])
+                stack_frames = target_dim // base_dim
+                if stack_frames > 1:
+                    previous = value
+                    if index > 0:
+                        previous_sample = self._dataset[index - 1]
+                        if self._same_episode(previous_sample, sample):
+                            previous = self._project_state(previous_sample[OBS_STATE])
+                    value = torch.cat([previous] * (stack_frames - 1) + [value], dim=-1)
+            else:
+                value = sample[key][..., :target_dim]
+            sample[key] = value
+        return sample
+
+    def _project_state(self, value: torch.Tensor) -> torch.Tensor:
+        if self._source_state_dim == 31:
+            value = value[..., :30].clone()
+            value[..., list(_LEGACY_WRENCH_SIGN_FLIP_INDICES)] *= -1
+        return value
+
+    @staticmethod
+    def _same_episode(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+        if "episode_index" in previous and "episode_index" in current:
+            return bool(previous["episode_index"] == current["episode_index"])
+        if "frame_index" in current:
+            return int(current["frame_index"]) > 0
+        return True
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._dataset, name)
+
+_PER_DIMENSION_STAT_KEYS = ("min", "max", "mean", "std", "q01", "q10", "q50", "q90", "q99")
+def _adapt_legacy_wrench_stats(feature_stats: dict[str, Any]) -> None:
+    """Rotate legacy wrench statistics 180 degrees around the task-frame X axis."""
+    for index in _LEGACY_WRENCH_SIGN_FLIP_INDICES:
+        mean = feature_stats.get("mean")
+        if isinstance(mean, (list, tuple)) and len(mean) == 31:
+            mean = list(mean)
+            mean[index] = -mean[index]
+            feature_stats["mean"] = mean
+
+        minimum = feature_stats.get("min")
+        maximum = feature_stats.get("max")
+        if (
+            isinstance(minimum, (list, tuple))
+            and isinstance(maximum, (list, tuple))
+            and len(minimum) == len(maximum) == 31
+        ):
+            minimum, maximum = list(minimum), list(maximum)
+            minimum[index], maximum[index] = -maximum[index], -minimum[index]
+            feature_stats["min"], feature_stats["max"] = minimum, maximum
+
+        for low_key, high_key in (("q01", "q99"), ("q10", "q90")):
+            low, high = feature_stats.get(low_key), feature_stats.get(high_key)
+            if (
+                isinstance(low, (list, tuple))
+                and isinstance(high, (list, tuple))
+                and len(low) == len(high) == 31
+            ):
+                low, high = list(low), list(high)
+                low[index], high[index] = -high[index], -low[index]
+                feature_stats[low_key], feature_stats[high_key] = low, high
+        median = feature_stats.get("q50")
+        if isinstance(median, (list, tuple)) and len(median) == 31:
+            median = list(median)
+            median[index] = -median[index]
+            feature_stats["q50"] = median
+
+
+
+
+def adapt_legacy_xyz_gripper_policy_stats(*, policy_cfg: Any, env_features: dict[str, Any]) -> None:
+    """Project legacy gripper dimensions out of normalization statistics.
+
+    The dataset adapter removes the final gripper value from each legacy sample.
+    The matching state/action statistics must be projected as well; otherwise the
+    processor rejects the 31-D state statistics for a 30-D policy and silently
+    trains BC on unnormalized state values.
+    """
+    dataset_stats = getattr(policy_cfg, "dataset_stats", None)
+    if not isinstance(dataset_stats, dict):
+        return
+
+    projections = ((OBS_STATE, (31, 30), 30), (ACTION, (4,), 3))
+    projected_features: list[str] = []
+    for feature_key, source_dims, base_target_dim in projections:
+        feature = env_features.get(feature_key)
+        feature_stats = dataset_stats.get(feature_key)
+        if feature is None or not isinstance(feature_stats, dict):
+            continue
+        target_dim = int(feature.shape[-1])
+        if target_dim % base_target_dim != 0:
+            continue
+
+        if feature_key == OBS_STATE and any(
+            len(values) == 31
+            for values in feature_stats.values()
+            if isinstance(values, (list, tuple))
+        ):
+            _adapt_legacy_wrench_stats(feature_stats)
+        projected = False
+        for stat_key in _PER_DIMENSION_STAT_KEYS:
+            values = feature_stats.get(stat_key)
+            if isinstance(values, (list, tuple)) and len(values) in source_dims:
+                source_dim = len(values)
+                base_values = list(values[:base_target_dim])
+                feature_stats[stat_key] = base_values * (target_dim // base_target_dim)
+                projected = True
+        if projected:
+            projected_features.append(f"{feature_key} {source_dim}->{target_dim}")
+
+    if projected_features:
+        logging.info(
+            "[LEARNER] Projecting legacy normalization statistics: %s",
+            ", ".join(projected_features),
+        )
+
+
+
+
+def adapt_legacy_xyz_gripper_dataset(dataset: Any, policy: SACPolicy) -> Any:
+    """Adapt the legacy 31-state/4-action MuJoCo dataset to XYZ-only policy IO."""
+    if len(dataset) == 0:
+        return dataset
+    state_feature = policy.config.input_features.get("observation.state")
+    action_feature = getattr(policy.config, "output_features", {}).get(ACTION)
+    if state_feature is None or action_feature is None:
+        return dataset
+    sample = dataset[0]
+    expected_state_dim = int(state_feature.shape[-1])
+    expected_action_dim = int(action_feature.shape[-1])
+    source_state_dim = int(sample["observation.state"].shape[-1])
+    source_action_dim = int(sample[ACTION].shape[-1])
+
+    target_dims: dict[str, int] = {}
+    if source_state_dim in (30, 31) and expected_state_dim % 30 == 0:
+        if source_state_dim != expected_state_dim:
+            target_dims["observation.state"] = expected_state_dim
+    elif source_state_dim != expected_state_dim:
+        raise ValueError(
+            f"Offline observation.state is {source_state_dim}D but policy expects {expected_state_dim}D"
+        )
+    if (source_action_dim, expected_action_dim) == (4, 3):
+        target_dims[ACTION] = 3
+    elif source_action_dim != expected_action_dim:
+        raise ValueError(f"Offline action is {source_action_dim}D but policy expects {expected_action_dim}D")
+
+    if not target_dims:
+        return dataset
+    logging.info(
+        "[LEARNER] Projecting legacy offline features in memory: state %d->%d, action %d->%d",
+        source_state_dim,
+        expected_state_dim,
+        source_action_dim,
+        expected_action_dim,
+    )
+    return _ProjectedDataset(
+        dataset,
+        target_dims,
+        source_state_dim=source_state_dim,
+    )
+
+
 def _resolve_external_offline_dataset_root(
     *,
     cfg: MPNetTrainRLServerPipelineConfig,
@@ -795,12 +1189,59 @@ def _resolve_external_offline_dataset_root(
     return None
 
 
+def _apply_external_dataset_stats(*, cfg: MPNetTrainRLServerPipelineConfig, registry: Any) -> None:
+    """Fill missing policy normalization stats from external offline datasets."""
+    for primitive_id in registry.adaptive_ids:
+        dataset_root = _resolve_external_offline_dataset_root(cfg=cfg, primitive_id=primitive_id)
+        if dataset_root is None:
+            continue
+        stats_path = dataset_root / "meta" / "stats.json"
+        if not stats_path.exists():
+            continue
+
+        dataset_stats = json.loads(stats_path.read_text())
+        policy_cfg = registry.policy_cfgs[primitive_id]
+        configured_stats = copy.deepcopy(getattr(policy_cfg, "dataset_stats", {}) or {})
+        added = []
+        # Feature shapes are populated later by ``make_policy(..., env_cfg=...)``.
+        # Keep all available stats now, then let ``resolve_policy_dataset_stats``
+        # filter them after the policy's real input/output features are known.
+        for feature_key in dataset_stats:
+            # Explicit policy stats win (notably ImageNet stats and physical
+            # action bounds). Replace only SAC's built-in two-value state
+            # placeholder with the real demonstration statistics.
+            configured = configured_stats.get(feature_key)
+            is_default_state_placeholder = feature_key == OBS_STATE and isinstance(configured, dict) and any(
+                isinstance(values, (list, tuple)) and len(values) == 2
+                for values in configured.values()
+            )
+            if configured is not None and not is_default_state_placeholder:
+                continue
+            configured_stats[feature_key] = dataset_stats[feature_key]
+            added.append(feature_key)
+        policy_cfg.dataset_stats = configured_stats
+        if added:
+            logging.info(
+                "[LEARNER] Loaded normalization stats for '%s' from %s: %s",
+                primitive_id,
+                stats_path,
+                ", ".join(sorted(added)),
+            )
+
+
 def _dataset_repo_id(cfg: MPNetTrainRLServerPipelineConfig, primitive_id: str) -> str:
     if cfg.dataset is not None and cfg.dataset.repo_id:
         repo_id = cfg.dataset.repo_id
     else:
         repo_id = cfg.env.task or "mpnet"
     return f"{repo_id}-{primitive_id}"
+
+
+def _dataset_video_backend(cfg: MPNetTrainRLServerPipelineConfig) -> str | None:
+    """Return the configured decoder for every learner-side dataset read."""
+    if cfg.dataset is None:
+        return None
+    return getattr(cfg.dataset, "video_backend", None)
 
 
 def load_training_state(

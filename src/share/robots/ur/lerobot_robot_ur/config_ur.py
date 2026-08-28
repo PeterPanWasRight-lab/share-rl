@@ -38,6 +38,7 @@ class URConfig(RobotConfig):
     gripper_frequency: float = 50.0
     gripper_vel: float = 1.0  # [0-1]
     gripper_force: float = 1.0  # [0-1]
+    gripper_min_command_interval_s: float = 0.5
     gripper_soft_real_time: bool = False
     gripper_rt_core: int = 4
 
@@ -93,6 +94,8 @@ class URConfig(RobotConfig):
     wrench_monitor_history_s: float = 10.0
 
     def __post_init__(self):
+        if float(self.gripper_min_command_interval_s) < 0.0:
+            raise ValueError("URConfig.gripper_min_command_interval_s must be non-negative.")
         if float(self.debug_hz) <= 0.0:
             raise ValueError("URConfig.debug_hz must be > 0.")
         if float(self.wrench_monitor_refresh_hz) <= 0.0:

@@ -13,7 +13,15 @@ from share.workspace.mpnet import ManipulationPrimitiveNetConfig, PreTrainedConf
 
 # Fields the env computes from connector data / spec / ablation flags and bakes onto each
 # primitive's default policy. Preserved when a top-level --policy.type or --policy.path selects the policy.
-_ENV_DERIVED_POLICY_ATTRS = ("dataset_stats", "freeze_vision_encoder")
+_ENV_DERIVED_POLICY_ATTRS = (
+    "dataset_stats",
+    "freeze_vision_encoder",
+    "vision_encoder_name",
+    "normalization_mapping",
+    "pretrained_vision_input_size",
+    "proprio_latent_dim",
+    "bc_random_crop_padding",
+)
 
 
 @dataclass(kw_only=True)
@@ -26,6 +34,9 @@ class MPNetTrainRLServerPipelineConfig(TrainRLServerPipelineConfig):
     log_freq: int = 10
     num_workers: int = 6
     batch_size: int = 256
+    replay_dashboard_enable: bool = True
+    replay_dashboard_host: str = "127.0.0.1"
+    replay_dashboard_port: int = 8000
 
     def resolve_policy_overrides(self) -> None:
         """Apply one umbrella policy selection to every adaptive primitive."""
@@ -80,6 +91,9 @@ class MPNetTrainRLServerPipelineConfig(TrainRLServerPipelineConfig):
                 )
         else:
             self.output_dir = Path(self.output_dir)
+
+        if not 0 <= self.replay_dashboard_port <= 65535:
+            raise ValueError("replay_dashboard_port must be between 0 and 65535.")
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         _ = build_adaptive_registry(self.env)

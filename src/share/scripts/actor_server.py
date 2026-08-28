@@ -9,6 +9,7 @@ from statistics import mean, quantiles
 from typing import Any
 
 import grpc
+import numpy as np
 import torch
 from lerobot.policies.sac.configuration_sac import SACConfig
 from torch.multiprocessing import Event, Queue
@@ -40,10 +41,33 @@ from share.rl.runtime import (
     make_policies_for_registry,
     sanitize_local_grpc_proxy_env,
 )
+from share.rl.force_backoff import ForceBackoffSafetyFilter
 from share.teleoperators import TeleopEvents, has_event, is_intervention
 from share.utils.control_utils import predict_action
 from share.utils.device import get_safe_torch_device
 from share.utils.logging_utils import log_runtime_frequency
+
+
+def _transition_reports_success(
+    *,
+    info: dict[str, Any],
+    reward: float,
+    done: bool,
+) -> bool:
+    """Recognize manual success and sparse positive terminal outcomes."""
+    return has_event(info, TeleopEvents.SUCCESS) or (done and reward > 0.0)
+
+
+def _sample_uniform_random_action(policy: Any, action_dim: int) -> torch.Tensor:
+    """Sample an environment-scale action for SERL's initial random phase."""
+    stats = getattr(policy.config, "dataset_stats", {}).get("action", {})
+    minimum = torch.as_tensor(stats.get("min", []), dtype=torch.float32)
+    maximum = torch.as_tensor(stats.get("max", []), dtype=torch.float32)
+    if minimum.numel() != action_dim or maximum.numel() != action_dim:
+        raise ValueError(
+            "random_action_steps requires per-dimension action min/max statistics"
+        )
+    return minimum + torch.rand(action_dim) * (maximum - minimum)
 
 
 class _CompositeShutdownEvent:
@@ -299,6 +323,12 @@ def act_with_policy(
 
     logging.info("[ACTOR] Resetting MP-Net into start primitive '%s'", start_primitive)
     transition = env.reset()
+    force_backoff = ForceBackoffSafetyFilter(
+        cfg.env.force_backoff,
+        action_frequency_hz=cfg.env.fps,
+    )
+    force_backoff_primitive: str | None = None
+    last_force_backoff_log_time = float("-inf")
     reset_active_policy()
     segment_state = reset_segment_state()
 
@@ -308,6 +338,9 @@ def act_with_policy(
             active_primitive = env.active_primitive
             policy = policies.get(active_primitive)
             obs = transition[TransitionKey.OBSERVATION]
+            if cfg.env.force_backoff.enabled and active_primitive != force_backoff_primitive:
+                force_backoff.reset(obs)
+                force_backoff_primitive = active_primitive
             work_dt = 0.0
 
             consumed_updates = apply_parameter_updates_from_queue(
@@ -324,21 +357,25 @@ def act_with_policy(
                         active_primitive,
                     )
                     waiting_for_initial_policy_warning_emitted = True
-                inference_t0 = time.perf_counter()
-
                 policy_obs = {key: value for key, value in obs.items() if key in policy.config.input_features}
                 task = env.config.primitives[active_primitive].task_description
                 task = active_primitive if task is None else task
-                action = predict_action(
-                    observation=policy_obs,
-                    policy=policy,
-                    device=device,
-                    preprocessor=preprocessors[active_primitive],
-                    postprocessor=postprocessors[active_primitive],
-                    use_amp=policy.config.use_amp,
-                    task=task,
-                    robot_type=None,
-                ).squeeze()
+                inference_t0 = time.perf_counter()
+                if collection_counts[active_primitive] < getattr(
+                    policy.config, "random_action_steps", 0
+                ):
+                    action = _sample_uniform_random_action(policy, env.action_dim)
+                else:
+                    action = predict_action(
+                        observation=policy_obs,
+                        policy=policy,
+                        device=device,
+                        preprocessor=preprocessors[active_primitive],
+                        postprocessor=postprocessors[active_primitive],
+                        use_amp=policy.config.use_amp,
+                        task=task,
+                        robot_type=None,
+                    ).squeeze()
 
                 inference_dt = time.perf_counter() - inference_t0
                 work_dt = inference_dt
@@ -355,11 +392,30 @@ def act_with_policy(
             else:
                 action = torch.zeros((env.action_dim,), dtype=torch.float32)
 
+            if policy is not None and cfg.env.force_backoff.enabled:
+                backoff_result = force_backoff.adjust(action, obs)
+                action = backoff_result.adjusted_action
+                now = time.monotonic()
+                if backoff_result.triggered_axes and now - last_force_backoff_log_time >= 1.0:
+                    logging.warning(
+                        "[ACTOR] force_backoff primitive=%s axes=%s force=%s action=%s",
+                        active_primitive,
+                        ",".join(backoff_result.triggered_axes),
+                        np.array2string(backoff_result.filtered_force_n, precision=2),
+                        action.detach().cpu().tolist(),
+                    )
+                    last_force_backoff_log_time = now
+
             new_transition = env.step(action)
             reward = float(new_transition[TransitionKey.REWARD])
             done = bool(new_transition.get(TransitionKey.DONE, False))
             truncated = bool(new_transition.get(TransitionKey.TRUNCATED, False))
             info = new_transition.get(TransitionKey.INFO, {})
+            step_reports_success = _transition_reports_success(
+                info=info,
+                reward=reward,
+                done=done,
+            )
 
             if has_event(info, TeleopEvents.STOP_RECORDING):
                 break
@@ -368,7 +424,7 @@ def act_with_policy(
                 segment_state["reward_sum"] += reward
                 segment_state["total_steps"] += 1
                 collection_counts[active_primitive] += 1
-                segment_state["success"] = segment_state["success"] or has_event(info, TeleopEvents.SUCCESS)
+                segment_state["success"] = segment_state["success"] or step_reports_success
 
                 intervention_active = is_intervention(info)
                 if intervention_active:
@@ -391,7 +447,12 @@ def act_with_policy(
                     },
                 )
                 transition_payload["id"] = active_primitive
-                segment_state["pending_transitions"].append(transition_payload)
+                if getattr(policy.config, "stream_transitions_immediately", False):
+                    push_transitions_to_transport_queue(
+                        transitions=[transition_payload], transitions_queue=transitions_queue
+                    )
+                else:
+                    segment_state["pending_transitions"].append(transition_payload)
 
             transition = new_transition
 
@@ -401,7 +462,7 @@ def act_with_policy(
                     collection_counts[active_primitive] -= segment_state["total_steps"]
                 elif policy is not None:
                     # Success may only be asserted on the terminal step; fold it in before publishing.
-                    segment_state["success"] = segment_state["success"] or has_event(info, TeleopEvents.SUCCESS)
+                    segment_state["success"] = segment_state["success"] or step_reports_success
                     variant = env.config.primitives[active_primitive].task_description or active_primitive
                     publish_segment(active_primitive, variant)
                     logging.info(
@@ -420,6 +481,7 @@ def act_with_policy(
                     waiting_for_initial_policy_warning_emitted = applied_parameter_updates == 0
 
                 transition = env.reset()
+                force_backoff_primitive = None
                 reset_active_policy()
                 segment_state = reset_segment_state()
 

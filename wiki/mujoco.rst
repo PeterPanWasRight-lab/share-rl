@@ -15,6 +15,11 @@ or placeholder geometry occupies the insertion channel.
 The controller's ``tool_tcp`` is colocated with Menagerie's existing
 ``gripper_pinch`` site. The workpiece tip remains a separate ``object_tip`` site
 used only for physical insertion-success measurements.
+The scene includes overhead and two diagonal side lights. When the interactive
+viewer is enabled, it displays the wrist-camera image, rolling three-axis force
+and torque plots, and a numeric task-frame wrench overlay. Pass
+``--env.viewer_wrist_camera_overlay=false``, ``--env.viewer_wrench_plot=false``,
+or ``--env.viewer_wrench_overlay=false`` to hide the corresponding panel.
 
 The six UR arm actuators retain MuJoCo Menagerie's position-servo model.
 Task-space ``ee_pos`` commands are converted to joint-position targets with
@@ -48,8 +53,8 @@ Install and preview
    share-mujoco-demo
 
 The demo now runs ``insert -> release -> reset`` automatically. Its keyboard
-layout follows LeRobot's end-effector teleoperator: arrow keys move in XY,
-left/right Shift move down/up in Z, and right/left Ctrl open/close the gripper.
+layout uses arrow keys for XY, left/right Shift for down/up in Z, and
+comma/period to close/open the gripper.
 Keyboard rotation and letter motion keys are disabled. To inspect the
 registered wrist camera instead of the free viewer camera:
 
@@ -60,7 +65,7 @@ registered wrist camera instead of the free viewer camera:
 Offline recording gives the operator 900 control steps (30 seconds at 30 Hz)
 by default. Success is measured from the free workpiece's ``object_tip`` site in
 the fixture frame, not from the gripper TCP. It requires at least 70 mm insertion
-depth, at most 10 mm lateral error, and peg/socket axis alignment of at least 0.98.
+depth, at most 2.0 mm radial lateral error, and peg/socket axis alignment of at least 0.98.
 The successful frame is stored with reward 1 and ``done=true``; a time limit
 stores reward 0 with ``truncated=true``. Either outcome makes the next recording
 iteration perform a full simulation reset and start a new insertion episode.
@@ -74,6 +79,18 @@ from the previous episode cannot drop the peg.
 
 Use ``--manual`` to disable the automatic downward insertion command while
 retaining keyboard Cartesian and gripper control.
+
+Keyboard episode controls are shared by recording, the online actor, and the
+interactive demo: ``/`` marks the current episode as a manual failure,
+``Enter`` optionally marks success, and ``Esc`` stops the whole process. Offline
+recording discards a manually failed episode; the online actor publishes it as
+a terminal zero-reward sample so the learner can train from the failure.
+
+The MuJoCo and UR backends also enforce a gripper command safety interval. The
+default ``gripper_min_command_interval_s=0.5`` suppresses repeated targets and
+holds the previous target when a different command arrives too soon. This final
+backend guard applies equally to keyboard and policy commands and persists
+across primitive switches.
 
 For a finite headless smoke run:
 
@@ -116,6 +133,7 @@ each batch mixes online replay with the offline demonstrations:
      --env.type=mujoco_ur5e_insertion \
      --dataset.repo_id=local/mujoco-insertion \
      --dataset.root=outputs/mujoco/offline-demos \
+     --dataset.video_backend=pyav \
      --output_dir=outputs/mujoco/run \
      --job_name=mujoco-insertion \
      --batch_size=128 \
@@ -128,6 +146,7 @@ to the learner, and receives updated actor parameters:
 
    share-actor \
      --env.type=mujoco_ur5e_insertion \
+     --env.teleop_mode=keyboard \
      --env.viewer=true \
      --dataset.repo_id=local/mujoco-insertion \
      --dataset.root=outputs/mujoco/offline-demos \

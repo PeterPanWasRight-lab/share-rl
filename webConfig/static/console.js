@@ -131,6 +131,18 @@ function renderServices(services) {
   });
 }
 
+function renderActorTiming(timing, actorStatus) {
+  var available = Boolean(timing && timing.available);
+  byId('actor-loop-hz').textContent = available ? timing.loop_hz.toFixed(1) + ' Hz' : '—';
+  byId('actor-loop-ms').textContent = available ? timing.loop_ms.toFixed(1) + ' ms / step' : '等待 Actor';
+  byId('actor-policy-hz').textContent = available ? timing.policy_hz.toFixed(1) + ' Hz' : '—';
+  byId('actor-policy-ms').textContent = available ? timing.policy_ms.toFixed(1) + ' ms / inference' : '推理频率';
+  byId('actor-timing-primitive').textContent = available ? timing.primitive : '—';
+  byId('actor-timing-time').textContent = available
+    ? ((actorStatus && actorStatus.state === 'running' ? '实时 · ' : '最后采样 · ') + timing.timestamp.slice(11))
+    : '尚无采样';
+}
+
 function bufferSummary(metrics) {
   var primitives = Object.values((metrics || {}).primitives || {});
   return primitives.reduce(function (total, item) {
@@ -192,8 +204,13 @@ async function refreshSummary() {
 
 async function refreshServices(withLogs) {
   try {
-    var services = await api('/api/console/services');
+    var results = await Promise.all([
+      api('/api/console/services'),
+      api('/api/console/actor-timing')
+    ]);
+    var services = results[0];
     renderServices(services);
+    renderActorTiming(results[1], services.actor);
     if (withLogs) {
       await Promise.all(['learner', 'actor'].map(async function (role) {
         var result = await api('/api/console/services/' + role + '/log?lines=' + logLineCount(role));

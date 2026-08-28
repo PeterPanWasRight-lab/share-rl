@@ -46,6 +46,9 @@ class DatasetRecordConfig(draccus.ChoiceRegistry, DatasetConfig):
     # Video codec for encoding videos. Options: 'h264', 'hevc', 'libsvtav1'.
     # Use 'h264' for faster encoding on systems where AV1 encoding is CPU-heavy.
     vcodec: str = "libsvtav1"
+    # TorchCodec can be importable while its FFmpeg/PyTorch shared libraries are
+    # incompatible. PyAV is the more portable default and remains CLI-overridable.
+    video_backend: str = "pyav"
 
     def __post_init__(self):
         if not self.in_memory:

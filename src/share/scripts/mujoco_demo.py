@@ -9,6 +9,7 @@ from lerobot.utils.robot_utils import precise_sleep
 
 from share.configs.mujoco_insertion import MujocoInsertionEnvConfig
 from share.envs.manipulation_primitive_net.env_manipulation_primitive_net import ManipulationPrimitiveNet
+from share.teleoperators import TeleopEvents, has_event
 
 
 def _parse_args() -> argparse.Namespace:
@@ -18,7 +19,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--manual", action="store_true", help="Disable automatic insertion motion.")
     parser.add_argument(
         "--viewer-camera",
-        choices=("free", "front", "side", "wrist"),
+        choices=("free", "front", "wrist"),
         default="free",
         help="Select the MuJoCo viewer camera.",
     )
@@ -50,7 +51,8 @@ def main() -> None:
     print(
         "Automatic cycle: insert -> open gripper -> drop peg -> reset. "
         "Keyboard: arrows move XY, left/right Shift move Z, "
-        "right/left Ctrl open/close; Ctrl-C exits."
+        "period/comma open/close, slash marks failure, Enter marks success, "
+        "and Esc exits."
     )
 
     try:
@@ -67,6 +69,9 @@ def main() -> None:
             transition = net.step(action)
             step += 1
             info = transition[TransitionKey.INFO]
+            if has_event(info, TeleopEvents.STOP_RECORDING):
+                print("\nStop requested by Esc.")
+                break
             robot = next(iter(net.robot_dict.values()))
             gripper_position = robot.get_observation().get("gripper.pos", float("nan"))
             print(

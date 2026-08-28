@@ -6,6 +6,7 @@ from share.robots.ur.lerobot_robot_ur.controller import TaskFrameCommand
 from share.robots.ur.lerobot_robot_ur.ur import UR
 from share.envs.manipulation_primitive.task_frame import ControlSpace
 from share.grippers.robotiq_controller import RTDERobotiqController
+from share.robots.gripper_command_limiter import GripperCommandLimiter
 
 from .config_ur_v2 import URV2Config
 from .controllers import (
@@ -50,6 +51,9 @@ class URV2(UR):
         Robot.__init__(self, config)
         self.config = config
         self.task_frame = TaskFrameCommand(controller_overrides=self._default_controller_overrides())
+        self._gripper_command_limiter = GripperCommandLimiter(
+            min_interval_s=config.gripper_min_command_interval_s
+        )
 
         self.shm = SharedMemoryManager()
         self.shm.start()

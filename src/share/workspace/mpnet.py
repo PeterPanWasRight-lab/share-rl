@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import asdict, dataclass, field
-from enum import IntEnum
+from enum import Enum, IntEnum
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +25,14 @@ from share.envs.manipulation_primitive_net.transitions import (
 try:
     from lerobot.configs.policies import PreTrainedConfig
     from share.envs.manipulation_primitive.config_manipulation_primitive import (
+        EventConfig,
+        GripperConfig,
+        HookConfig,
+        ImagePreprocessingConfig,
+        KinematicsConfig,
         MoveDeltaPrimitiveConfig,
+        ManipulationPrimitiveProcessorConfig,
+        ObservationConfig,
         OpenLoopTrajectorySpec,
         OpenLoopTrajectoryPrimitiveConfig,
         ManipulationPrimitiveConfig,
@@ -242,10 +249,16 @@ def create_template_mpnet(primitive_name: str = "main", notes: str | None = None
 
 
 def load_mpnet_config(path: str | Path) -> ManipulationPrimitiveNetConfig:
-    """Load an MP-Net config from a JSON file."""
+    """Load either a Draccus or flat WebConfig MP-Net JSON file."""
     path = Path(path)
-    if not REAL_MPNET_BACKEND:
-        return _decode_mpnet(json.loads(path.read_text(encoding="utf-8")))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    is_flat_web_config = (
+        isinstance(payload, dict)
+        and "type" not in payload
+        and "primitives" in payload
+    )
+    if not REAL_MPNET_BACKEND or is_flat_web_config:
+        return validate_mpnet_config(_decode_mpnet(payload))
     with draccus.config_type("json"):
         return draccus.parse(ManipulationPrimitiveNetConfig, config_path=path, args=[])
 
@@ -277,21 +290,28 @@ def _encode_task_frame(frame: TaskFrame) -> dict[str, Any]:
 
 
 def _decode_task_frame(payload: dict[str, Any]) -> TaskFrame:
+    min_pose = payload.get("min_pose")
+    max_pose = payload.get("max_pose")
+    if isinstance(min_pose, list):
+        min_pose = [float("-inf") if value is None else value for value in min_pose]
+    if isinstance(max_pose, list):
+        max_pose = [float("inf") if value is None else value for value in max_pose]
     return TaskFrame(
         target=list(payload.get("target", [0.0] * 6)),
         space=payload.get("space", 1),
         policy_mode=[PolicyMode(item) if item is not None else None for item in payload.get("policy_mode", [None] * 6)],
         control_mode=[ControlMode(item) for item in payload.get("control_mode", [0] * 6)],
         origin=payload.get("origin"),
-        min_pose=payload.get("min_pose"),
-        max_pose=payload.get("max_pose"),
+        min_pose=min_pose,
+        max_pose=max_pose,
         controller_overrides=copy.deepcopy(payload.get("controller_overrides")),
     )
 
 
 def _encode_transition(transition: Transition) -> dict[str, Any]:
     payload = {"type": TRANSITION_TYPE_NAMES.get(type(transition), type(transition).__name__)}
-    payload.update(vars(transition))
+    for k, v in vars(transition).items():
+        payload[k] = _jsonable(v)
     return payload
 
 
@@ -335,7 +355,10 @@ def _encode_primitive(primitive: PrimitiveConfig) -> dict[str, Any]:
     if primitive.policy is not None and primitive.policy.pretrained_path is not None:
         payload["policy"] = {"pretrained_path": str(primitive.policy.pretrained_path), "device": getattr(primitive.policy, "device", "cpu")}
     if getattr(primitive, "processor", None):
-        payload["processor"] = primitive.processor
+        if hasattr(primitive.processor, "__dataclass_fields__"):
+            payload["processor"] = asdict(primitive.processor)
+        else:
+            payload["processor"] = primitive.processor
     if isinstance(primitive, MoveDeltaPrimitiveConfig):
         payload["delta"] = primitive.delta
         payload["delta_frame"] = primitive.delta_frame
@@ -378,9 +401,34 @@ def _decode_primitive(payload: dict[str, Any]) -> PrimitiveConfig:
     else:
         primitive_cls = ManipulationPrimitiveConfig
 
+    processor_payload = payload.get("processor", {})
+    if REAL_MPNET_BACKEND and isinstance(processor_payload, dict):
+        image_payload = processor_payload.get("image_preprocessing")
+        image_preprocessing = None
+        if isinstance(image_payload, dict):
+            image_payload = copy.deepcopy(image_payload)
+            if image_payload.get("resize_size") is not None:
+                image_payload["resize_size"] = tuple(image_payload["resize_size"])
+            image_preprocessing = ImagePreprocessingConfig(**image_payload)
+        events_payload = copy.deepcopy(processor_payload.get("events", {}))
+        if events_payload.get("pulse_events") is not None:
+            events_payload["pulse_events"] = tuple(events_payload["pulse_events"])
+        processor = ManipulationPrimitiveProcessorConfig(
+            control_time_s=processor_payload.get("control_time_s", 10.0),
+            fps=processor_payload.get("fps", 10.0),
+            image_preprocessing=image_preprocessing,
+            events=EventConfig(**events_payload),
+            hooks=HookConfig(**copy.deepcopy(processor_payload.get("hooks", {}))),
+            observation=ObservationConfig(**copy.deepcopy(processor_payload.get("observation", {}))),
+            gripper=GripperConfig(**copy.deepcopy(processor_payload.get("gripper", {}))),
+            kinematics=KinematicsConfig(**copy.deepcopy(processor_payload.get("kinematics", {}))),
+        )
+    else:
+        processor = processor_payload
+
     kwargs: dict[str, Any] = {
         "task_frame": task_frame,
-        "processor": payload.get("processor", {}),
+        "processor": processor,
         "policy": policy,
         "policy_overwrites": payload.get("policy_overwrites", {}),
         "notes": payload.get("notes"),
@@ -526,6 +574,12 @@ def _jsonable(value: Any) -> Any:
         return value
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, Enum) or hasattr(value, "value"):
+        return _jsonable(value.value)
+    if isinstance(value, Transition):
+        return _encode_transition(value)
+    if hasattr(value, "__dataclass_fields__"):
+        return {str(k): _jsonable(v) for k, v in asdict(value).items()}
     if isinstance(value, dict):
         return {str(key): _jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):

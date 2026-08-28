@@ -35,7 +35,7 @@ from share.envs.manipulation_primitive_net.env_manipulation_primitive_net import
     ManipulationPrimitiveNet,
 )
 from share.envs.manipulation_primitive_net.transitions import Always, OnTimeLimit  # noqa: E402
-from share.scripts.actor_server import run_actor  # noqa: E402
+from share.scripts.actor_server import _transition_reports_success, run_actor  # noqa: E402
 from share.scripts.learner_server import run_learner  # noqa: E402  # noqa: E402
 from share.utils.mock_utils import MockRobot, MockTeleoperator  # noqa: E402
 
@@ -156,6 +156,20 @@ def _build_env_config(port: int) -> ManipulationPrimitiveNetConfig:
         teleop=None,
         cameras={},
     )
+
+
+@pytest.mark.parametrize(
+    ("info", "reward", "done", "expected"),
+    [
+        ({}, 1.0, True, True),
+        ({"success": True}, 0.0, True, True),
+        ({}, 0.0, True, False),
+        ({"failure": True}, 0.0, True, False),
+        ({}, 1.0, False, False),
+    ],
+)
+def test_transition_reports_success(info, reward, done, expected):
+    assert _transition_reports_success(info=info, reward=reward, done=done) is expected
 
 
 def test_mpn_rl_servers_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

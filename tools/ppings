@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""
+ppings: 走 Clash 代理的"伪 ping"
+
+由于 ICMP 无法被 Clash(HTTP/SOCKS5) 代理承载，真正的 ping 在墙内必然不通。
+本脚本通过 Clash 的 HTTP CONNECT 代理建立一条 TCP 隧道来测量到目标主机的延迟，
+以模拟 ping 的核心功能(测连通性 + 测延迟)。
+
+用法:
+  ppings [host] [count]   # 默认 google.com 连测 4 次
+  ppings example.com 5    # 指定主机和次数
+
+依赖:
+  - Python 3 (仅标准库)
+  - Clash/mihomo 在本机 127.0.0.1:7890 开启 HTTP 代理
+"""
+import socket
+import sys
+import time
+
+HTTP_HOST = "127.0.0.1"
+HTTP_PORT = 7890      # Clash HTTP 代理端口
+TARGET_HOST = sys.argv[1] if len(sys.argv) > 1 else "google.com"
+COUNT = int(sys.argv[2]) if len(sys.argv) > 2 else 4
+PORT = 443            # 走 HTTPS 端口测连通性
+
+
+def connect_through_proxy(target: str, port: int, timeout: float) -> bool:
+    """通过 HTTP CONNECT 代理建立到 target:port 的 TCP 隧道。"""
+    try:
+        s = socket.create_connection((HTTP_HOST, HTTP_PORT), timeout=timeout)
+        s.settimeout(timeout)
+        req = (
+            f"CONNECT {target}:{port} HTTP/1.1\r\n"
+            f"Host: {target}:{port}\r\n\r\n"
+        )
+        s.sendall(req.encode())
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            resp += chunk
+        s.close()
+        return resp.startswith(b"HTTP/1.1 200") or resp.startswith(b"HTTP/1.0 200")
+    except (socket.timeout, OSError):
+        return False
+
+
+def main() -> None:
+    print(f"PING {TARGET_HOST} (via HTTP proxy {HTTP_HOST}:{HTTP_PORT}) - TCP {PORT} 模拟")
+
+    send, recv, total_ms = 0, 0, 0
+    for i in range(1, COUNT + 1):
+        send += 1
+        start = time.monotonic()
+        ok = connect_through_proxy(TARGET_HOST, PORT, timeout=10)
+        elapsed = (time.monotonic() - start) * 1000
+        if ok:
+            recv += 1
+            total_ms += int(elapsed)
+            print(f"64 bytes from {TARGET_HOST}: tcp_seq={i} time={int(elapsed)} ms")
+        else:
+            print(f"Request timeout for {TARGET_HOST}: tcp_seq={i}")
+        time.sleep(1)
+
+    loss = (send - recv) * 100 // send
+    print(f"--- {TARGET_HOST} ping statistics ---")
+    print(f"{send} packets transmitted, {recv} received, {loss}% packet loss")
+    if recv:
+        avg = total_ms // recv
+        print(f"rtt min/avg/max = {total_ms}/{avg}/{total_ms} ms")
+
+
+if __name__ == "__main__":
+    main()

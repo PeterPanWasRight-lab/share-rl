@@ -1,4 +1,4 @@
-"""Lazy exports for manipulation-primitive modules."""
+"""操作原语模块的延迟动态导出接口。"""
 
 from __future__ import annotations
 

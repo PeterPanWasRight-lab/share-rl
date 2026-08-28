@@ -297,7 +297,12 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
                 if _commit_episode_buffers(
                     datasets,
-                    rerecord=has_event(info, TeleopEvents.RERECORD_EPISODE),
+                    # Failed demonstrations are useful online RL experience, but
+                    # should not enter the offline demonstration dataset.
+                    rerecord=(
+                        has_event(info, TeleopEvents.RERECORD_EPISODE)
+                        or has_event(info, TeleopEvents.FAILURE)
+                    ),
                     num_episodes=cfg.dataset.num_episodes,
                     play_sounds=cfg.play_sounds,
                 ):

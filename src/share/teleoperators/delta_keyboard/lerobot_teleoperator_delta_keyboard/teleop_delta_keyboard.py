@@ -1,9 +1,12 @@
 #!/usr/bin/env python
 
+import json
 import logging
 import os
+import socket
 import sys
 import time
+from pathlib import Path
 from queue import Queue
 from typing import Any
 
@@ -66,6 +69,11 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
         self.event_queue = Queue()
         self.current_pressed: dict[str, bool] = {}
         self.listener = None
+        self._remote_socket: socket.socket | None = None
+        self._remote_socket_path = Path(
+            os.environ.get("SHARE_KEYBOARD_TELEOP_SOCKET", "/tmp/share_keyboard_teleop.sock")
+        )
+        self._connected = False
         self.logs: dict[str, float] = {}
         self._gripper_position = float(self.config.initial_gripper_position)
 
@@ -75,6 +83,9 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
         self._prev_event_key_state: dict[str, bool] = {
             event_name: False for event_name in self.config.event_bindings
         }
+        self._pressed_since_event_read: set[str] = set()
+        self._remote_key_values_pending: dict[str, float] | None = None
+        self._remote_key_values_active: dict[str, float] = {}
 
     @property
     def action_features(self) -> dict[str, type]:
@@ -89,7 +100,13 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
 
     @property
     def is_connected(self) -> bool:
-        return PYNPUT_AVAILABLE and isinstance(self.listener, keyboard.Listener) and self.listener.is_alive()
+        listener_class = getattr(keyboard, "Listener", None) if keyboard is not None else None
+        if listener_class is None:
+            return self._connected
+        return (
+            isinstance(self.listener, listener_class)
+            and self.listener.is_alive()
+        )
 
     @property
     def is_calibrated(self) -> bool:
@@ -97,16 +114,37 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
 
     @check_if_already_connected
     def connect(self) -> None:
-        if PYNPUT_AVAILABLE:
+        listener_class = getattr(keyboard, "Listener", None) if keyboard is not None else None
+        if PYNPUT_AVAILABLE and listener_class is not None:
             logger.info("pynput is available - enabling local keyboard listener.")
-            self.listener = keyboard.Listener(
+            self.listener = listener_class(
                 on_press=self._on_press,
                 on_release=self._on_release,
             )
             self.listener.start()
         else:
-            logger.info("pynput not available - skipping local keyboard listener.")
+            logger.info("pynput listener not available - skipping local keyboard listener.")
             self.listener = None
+        self._connect_remote_keyboard()
+        self._connected = True
+
+    def _connect_remote_keyboard(self) -> None:
+        """Accept optional local key tokens from automation without X11 injection."""
+        path = self._remote_socket_path.expanduser().resolve()
+        if path.exists():
+            proc_net_unix = Path("/proc/net/unix")
+            active = proc_net_unix.exists() and str(path) in proc_net_unix.read_text(errors="replace")
+            if active:
+                logger.warning("Remote keyboard socket already active at %s; automation disabled", path)
+                return
+            path.unlink()
+        remote_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        remote_socket.bind(str(path))
+        remote_socket.setblocking(False)
+        os.chmod(path, 0o600)
+        self._remote_socket = remote_socket
+        self._remote_socket_path = path
+        logger.info("Remote keyboard automation socket: %s", path)
 
     def calibrate(self) -> None:
         return None
@@ -157,22 +195,60 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
                 self.disconnect()
 
     def _drain_pressed_keys(self) -> None:
+        self._drain_remote_keys()
         while not self.event_queue.empty():
             token, is_pressed = self.event_queue.get_nowait()
             if is_pressed:
                 self.current_pressed[token] = True
+                self._pressed_since_event_read.add(token)
             else:
                 self.current_pressed.pop(token, None)
+
+    def _drain_remote_keys(self) -> None:
+        if self._remote_socket is None:
+            return
+        while True:
+            try:
+                message = json.loads(self._remote_socket.recv(4096))
+            except BlockingIOError:
+                return
+            except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
+                logger.warning("Ignoring malformed remote keyboard event: %s", exc)
+                continue
+            if isinstance(message, dict) and isinstance(message.get("pulse"), list):
+                pulse_values: dict[str, float] = {}
+                for item in message["pulse"]:
+                    if not isinstance(item, dict) or not isinstance(item.get("key"), str):
+                        continue
+                    value = item.get("value", 1.0)
+                    if isinstance(value, (int, float)):
+                        pulse_values[item["key"].lower()] = max(0.0, min(1.0, float(value)))
+                self._remote_key_values_pending = pulse_values
+                continue
+            token = message.get("key") if isinstance(message, dict) else None
+            pressed = message.get("pressed") if isinstance(message, dict) else None
+            if not isinstance(token, str) or not isinstance(pressed, bool):
+                logger.warning("Ignoring malformed remote keyboard event: %r", message)
+                continue
+            self.event_queue.put((token.lower(), pressed))
 
     def _axis_value(self, binding: KeyboardAxisBinding) -> float:
         if not binding.enabled or not self._all_keys_pressed(binding.required_keys):
             return 0.0
 
         value = 0.0
-        if binding.pos_key is not None and self.current_pressed.get(binding.pos_key, False):
-            value += 1.0
-        if binding.neg_key is not None and self.current_pressed.get(binding.neg_key, False):
-            value -= 1.0
+        if binding.pos_key is not None:
+            value += (
+                1.0
+                if self.current_pressed.get(binding.pos_key, False)
+                else self._remote_key_values_active.get(binding.pos_key, 0.0)
+            )
+        if binding.neg_key is not None:
+            value -= (
+                1.0
+                if self.current_pressed.get(binding.neg_key, False)
+                else self._remote_key_values_active.get(binding.neg_key, 0.0)
+            )
 
         return value * binding.scale
 
@@ -224,6 +300,9 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
         self._prev_event_key_state = {
             event_name: False for event_name in self.config.event_bindings
         }
+        self._pressed_since_event_read.clear()
+        self._remote_key_values_pending = None
+        self._remote_key_values_active.clear()
 
     def get_teleop_events(self) -> dict[str, Any]:
         """
@@ -233,11 +312,18 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
         If include_intervention_event=True, IS_INTERVENTION is True whenever any motion axis is active.
         """
         self._drain_pressed_keys()
+        self._remote_key_values_active = self._remote_key_values_pending or {}
+        self._remote_key_values_pending = None
 
         events: dict[str, Any] = {}
 
         for event_name, binding in self.config.event_bindings.items():
-            current_pressed = self.current_pressed.get(binding.key, False)
+            # Preserve short taps whose press and release both arrive between
+            # two control cycles, especially Enter and slash episode markers.
+            current_pressed = (
+                self.current_pressed.get(binding.key, False)
+                or binding.key in self._pressed_since_event_read
+            )
             prev_pressed = self._prev_event_key_state.get(event_name, False)
 
             if binding.toggle:
@@ -248,6 +334,8 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
                 events[event_name] = current_pressed
 
             self._prev_event_key_state[event_name] = current_pressed
+
+        self._pressed_since_event_read.clear()
 
         if self.config.include_intervention_event:
             action = self.get_action()
@@ -268,3 +356,9 @@ class KeyboardVelocityTeleop(Teleoperator, HasTeleopEvents):
         if self.listener is not None:
             self.listener.stop()
             self.listener = None
+        if self._remote_socket is not None:
+            self._remote_socket.close()
+            self._remote_socket = None
+            if self._remote_socket_path.exists():
+                self._remote_socket_path.unlink()
+        self._connected = False

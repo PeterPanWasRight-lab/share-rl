@@ -26,6 +26,7 @@ from console_runtime import (  # noqa: E402
     build_service_command,
     discover_project_assets,
     example_runner,
+    fetch_actor_timing,
     fetch_replay_metrics,
     load_profile,
     save_profile,
@@ -231,6 +232,11 @@ def clear_console_service_log(role: str):
 @app.get("/api/console/replay")
 def console_replay():
     return jsonify(fetch_replay_metrics(load_profile()))
+
+
+@app.get("/api/console/actor-timing")
+def console_actor_timing():
+    return jsonify(fetch_actor_timing(load_profile()))
 
 
 @app.get("/api/console/examples")

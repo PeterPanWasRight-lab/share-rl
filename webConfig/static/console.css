@@ -104,6 +104,11 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .service-card dl div:last-child { border: 0; }
 .service-card dt { color: var(--muted); font-size: 9px; }
 .service-card dd { margin: 5px 0 0; font-size: 12px; }
+.actor-timing { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; margin: -4px 0 16px; }
+.actor-timing > div { min-width: 0; padding: 10px; border: 1px solid #22404d; border-radius: 8px; background: linear-gradient(145deg,rgba(20,57,69,.55),rgba(8,24,34,.7)); }
+.actor-timing span, .actor-timing small { display: block; color: var(--muted); font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.actor-timing strong { display: block; margin: 5px 0 3px; color: var(--cyan); font: 700 18px/1 "Cascadia Code",monospace; }
+.actor-timing > div:last-child strong { color: var(--text); font-size: 12px; }
 .log-box, #command-preview { min-height: 148px; max-height: 260px; overflow: auto; margin: 17px 0 0; padding: 13px; white-space: pre-wrap; word-break: break-all; border: 1px solid #172b3b; border-radius: 8px; color: #9fb4c1; background: #07111a; font: 10px/1.55 "Cascadia Code", monospace; }
 .log-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; color: var(--muted); font-size: 10px; }
 .log-toolbar > div { display: flex; align-items: center; gap: 8px; }
