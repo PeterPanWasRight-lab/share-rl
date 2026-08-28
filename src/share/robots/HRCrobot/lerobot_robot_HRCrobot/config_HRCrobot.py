@@ -20,19 +20,23 @@ class HRCrobotConfig(RobotConfig):
     # Communication
     # ============================================================
 
-    robot_ip: str = "192.168.1.10"
+    # 机器人控制器 IP
+    robot_ip: str = "10.10.59.211"
+
+    # hsrosi 位姿/运动链路端口
+    hrc_port: int = 9095
+
+    # HSC3 夹爪 IO 链路端口
+    hsc3_port: int = 23234
 
     # ============================================================
     # Cartesian servo
     # ============================================================
 
-    # 必须改成真机 servoL 类接口的实际控制频率
+    # servo_cartesian 流式下发频率 (Hz)。
+    # SDK 没有 servoL 接口，controller 层用
+    # move_to_cartesian_position 按此周期限频。
     frequency: float = 100.0
-
-    # 如果厂家 servoL 接口有类似参数，可以使用
-    # 没有的话暂时不用
-    servo_lookahead_time: float = 0.1
-    servo_gain: float = 300.0
 
     # ============================================================
     # Gripper

@@ -50,6 +50,9 @@ class HRCrobot(Robot):
             robot_ip=config.robot_ip,
             frequency=config.frequency,
             gripper_threshold=config.gripper_threshold,
+            use_gripper=config.use_gripper,
+            hrc_port=config.hrc_port,
+            hsc3_port=config.hsc3_port,
         )
 
         # 当前 SHaRe TaskFrame。
@@ -202,7 +205,7 @@ class HRCrobot(Robot):
         vendor_pose: list[float],
     ) -> list[float]:
         """
-        当前假设厂家返回：
+        controller 层保证返回（真机已验证）：
 
             [
                 x,
@@ -213,7 +216,9 @@ class HRCrobot(Robot):
                 rotvec_z,
             ]
 
-        转成 SHaRe：
+        (meter + rotation vector rad)
+
+        本函数只做表示转换，转成 SHaRe：
 
             [
                 x,
@@ -258,9 +263,16 @@ class HRCrobot(Robot):
         world_pose: list[float],
     ) -> list[float]:
         """
-        SHaRe xyz+rpy
+        SHaRe xyz+rpy (meter + rad)
         ->
-        厂家 xyz+rotation-vector
+        controller 层约定 xyz+rotation-vector (meter + rad)
+
+        SDK 侧的 mm + euler degree 换算
+        在 controller.py 内部完成，
+        本层不感知厂家单位。
+
+        旋转表示约定已经过真机旋转测试验证
+        (test_servo_cartesian_rotation_rz)。
         """
 
         if len(world_pose) != 6:
