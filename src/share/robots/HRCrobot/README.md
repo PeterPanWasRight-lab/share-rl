@@ -52,6 +52,9 @@ robot.disconnect()
 | `use_gripper`       | `True`           | 是否启用夹爪链路；`False` 时不连 HSC3 |
 | `gripper_threshold` | `0.5`            | ≥0.5 判闭合，<0.5 判打开               |
 | `gripper_min_command_interval_s` | `0.5` | 夹爪目标变化的最小下发间隔，与 MuJoCo/UR 一致 |
+| `gripper_target_tolerance` | `1e-4` | 夹爪目标判定"未变化"的容差（同目标永不重发） |
+| `max_cartesian_step_m` | `0.005` | 单步平移限幅（m），超限抛 ValueError。只能收紧，见「行为契约」 |
+| `max_rotation_step_rad` | `0.0349`（2°） | 单步旋转限幅（rad），超限抛 ValueError。只能收紧 |
 | `cameras`           | `{}`             | 暂未使用                                |
 
 ## 接口列表
@@ -93,23 +96,82 @@ robot.disconnect()
 
 ### send_action(action) -> dict
 
-下发 **TaskFrame 系**下的绝对目标，返回传入的 action（LeRobot 惯例）：
+下发 **TaskFrame 系**下的绝对目标，返回 **executed_action**（见下方行为契约）：
 
 ```python
 robot.send_action({
     "x.ee_pos": 0.010,    # 未出现的轴自动用 task_frame.target 补齐
     "z.ee_pos": 0.080,
-    "gripper.pos": 1.0,   # ≥0.5 闭合；<0.5 打开；值变化时才真正下发
+    "gripper.pos": 1.0,   # ≥0.5 闭合；<0.5 打开；经夹爪限频器决定是否下发
 })
 ```
 
 `send_action()` 的 TaskFrame 姿态目标是 extrinsic XYZ Euler（rad），而
 `get_observation()` 的 `rx/ry/rz.ee_pos` 是 rotation vector（rad）。不要把姿态观测
-原样作为绝对动作回放；应先转换为 Euler。适配器会在下发 SDK 前检查相邻绝对目标，
-默认拒绝超过 5 mm 或 2° 的单步命令。阈值可通过
-`HRCrobotConfig.max_cartesian_step_m` 和 `max_rotation_step_rad` 收紧。
+原样作为绝对动作回放；应先转换为 Euler。
 
-内部链路：task→base 换算 → `servo_cartesian` 限频 → SDK 流式 `move_to_cartesian_position`。
+内部链路：安全限幅检查 → task→base 换算 → `servo_cartesian` 限频 → SDK 流式
+`move_to_cartesian_position`。
+
+## 行为契约（2026-08-29 起，安全硬保护）
+
+`send_action` 不是无条件透传，它是带四道闸门的唯一指令入口。上层 primitive 的
+使用者必须了解以下契约：
+
+### 1. 单步安全限幅（fail-fast）
+
+每次下发前，适配器将目标 vendor 位姿与当前 TCP 位姿比对：
+
+- **平移单步 > `max_cartesian_step_m`（默认 5mm）→ 抛 `ValueError`，不下发**
+- **旋转单步 > `max_rotation_step_rad`（默认 2°）→ 抛 `ValueError`，不下发**
+
+设计意图：即使上层把旋转表示搞错（如把 rotvec 当 euler 回放，曾导致真机飞车），
+机器人单拍最多走 5mm/2°，物理上不可能失控。阈值只能收紧不能放宽。
+
+**primitive 步长预算公式**：`单步距离 = 轨迹速度 ÷ 采样帧率`。
+例：100mm/s @ 100fps = 1mm/拍 ✅；300mm/s @ 30fps = 10mm/拍 ❌ 必炸。
+调快轨迹速度或降低采样率前，先核对预算；预算不足时在 primitive 层细分目标点，
+**不要放宽阈值**。
+
+注意：限幅比较的是**完整 vendor 位姿（含补齐轴）**，与"缺失轴由 target 补齐"
+语义天然兼容。
+
+### 2. 夹爪命令限频（GripperCommandLimiter）
+
+- **同目标永不重发**：目标与当前执行值之差 ≤ `gripper_target_tolerance`
+  （默认 1e-4）时，无论隔多久都不下发
+- **冷却间隔**：不同目标之间至少隔 `gripper_min_command_interval_s`（默认 0.5s），
+  冷却期内的变更被抑制
+- 被抑制时不产生硬件调用
+
+### 3. 返回值 = executed_action（现实状态）
+
+返回的字典反映**硬件实际执行的目标**，而非请求值：
+
+- 平移/旋转轴：请求即执行，原样返回
+- 夹爪被冷却抑制时：返回**仍在执行的旧目标**（例：请求 0.0 被抑制 → 返回 1.0）
+
+上层若依赖返回值做状态推断（如评估脚本），应以返回值为准。
+
+### 4. 输入不可变
+
+`send_action` 不修改传入的 action 字典，返回值是新字典。
+
+### 5. 观测/动作的旋转表示不对称（易错点）
+
+| 通道 | 姿态表示 |
+|---|---|
+| `get_observation()` 的 `rx/ry/rz.ee_pos` | rotation vector（rad） |
+| `send_action()` 的 `rx/ry/rz.ee_pos` | extrinsic XYZ Euler（rad） |
+| TaskFrame 的 origin/target | extrinsic XYZ Euler（rad） |
+
+消费观测做动作时必须 `euler_xyz_from_rotvec()` 转换（见
+`tests/share/robots/test_hrcrobot_send_action_contract.py` 的往返契约测试）。
+
+### 6. 连接即验证笛卡尔模式
+
+`connect()` 完成后会校验 vendor 侧运动模式确为 cartesian 且链路存活，否则断开
+并抛 `ConnectionError`——绝不允许在模式未就绪时进入 servo 循环。
 
 ### set_task_frame(frame)
 
@@ -185,18 +247,14 @@ TaskFrame
 
 | 路径                                                    | 内容                                |
 | ------------------------------------------------------- | ----------------------------------- |
-| `tests/ HRCrobotTest/test_hrcrobot_controller.py`     | 本体控制测试（18 项，三层安全开关） |
+| `tests/ HRCrobotTest/test_hrcrobot_controller.py`     | controller 层测试（含限频/旋转，三层安全开关） |
+| `tests/ HRCrobotTest/test_hrcrobot_pose_motion.py`    | controller 层位姿移动套件（三轴往返/停止保持/完整栈，需 ACK 开关） |
+| `tests/ HRCrobotTest/test_while_loop_timing.py`       | while True 循环节拍与位移测试（完整栈） |
 | `tests/ HRCrobotTest/test_hrcrobot_gripper.py`        | 夹爪测试（11 项）                   |
 | `tests/ HRCrobotTest/verify_live_connection.py`       | 连接真实性采样脚本                  |
 | `tests/ HRCrobotTest/benchmark_controller_latency.py` | 接口延迟基准                        |
+| `tests/share/robots/test_hrcrobot_sim_alignment.py`   | HRCrobot.py 适配层仿真对齐测试（离线） |
+| `tests/share/robots/test_hrcrobot_send_action_contract.py` | HRCrobot.py 适配层契约测试（离线，含旋转表示往返） |
+| `tests/share/robots/test_gripper_command_limiter.py`  | 夹爪限频器单元测试（离线）          |
+| `SIM_ALIGNMENT.md`                                    | 仿真/真机迁移边界与标定清单         |
 
-
-循环统计（共 254 迭代, 墙钟 2.53s）:
-  迭代周期                   min=   3.24  p50=   9.91  p95=  11.21  max=  12.13  mean=   9.96  ms
-    get_observation      min=   0.24  p50=   0.34  p95=   0.86  max=   2.88  mean=   0.41  ms
-    send_action          min=   2.61  p50=   9.41  p95=  10.81  max=  11.80  mean=   9.54  ms
-  平均下发频率 = 100.4 Hz (期望 ≈100)
-
-位移: dz = +3.00 mm (目标 +3 mm), xy 漂移 = 0.02 mm
-[2026-08-28 17:51:16.341] [HsTrajProxy] [info] 断开与服务器的连接
-[2026-08-28 17:51:16.341] [HsTrajProxy] [info] 已成功断开连接
