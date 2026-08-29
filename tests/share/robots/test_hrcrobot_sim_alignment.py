@@ -101,10 +101,14 @@ def test_task_pose_action_reaches_controller_as_world_rotation_vector() -> None:
         f"{axis}.ee_pos": target[index]
         for index, axis in enumerate(("x", "y", "z", "rx", "ry", "rz"))
     }
-    robot.send_action(action)
-
+    # This test verifies representation conversion, not a discontinuous move.
+    # Seed the fake hardware at the requested pose so the live safety envelope
+    # remains enabled.
     expected_world = task_pose_to_world_pose(target, origin)
     expected_vendor = robot._world_rpy_to_vendor_pose(expected_world)
+    controller.tcp_pose = list(expected_vendor)
+    robot.send_action(action)
+
     assert len(controller.servo_calls) == 1
     np.testing.assert_allclose(controller.servo_calls[0], expected_vendor, atol=1e-10)
 

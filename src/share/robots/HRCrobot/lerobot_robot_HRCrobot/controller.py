@@ -353,6 +353,20 @@ class HRCrobotController:
                 f"{self.robot_ip}:{self.hrc_port}."
             )
 
+        # ``connect`` also initializes the vendor Cartesian motion mode.  A
+        # socket alone is not sufficient: continuing after a failed start-pose
+        # setup makes later servo calls ambiguous and unsafe.
+        vendor_motion_mode = getattr(self.client, "_motion_mode", None)
+        if vendor_motion_mode != "cartesian" or not self.client.is_connected():
+            try:
+                self.client.disconnect()
+            finally:
+                self.client = None
+            raise ConnectionError(
+                "HRCrobot connected but Cartesian motion initialization did "
+                "not complete; refusing to enable servo commands."
+            )
+
         # --------------------------------------------------------
         # 夹爪走独立的 HSC3 IO 链路。
         # 不可用时只记录命令状态，不影响本体运动。

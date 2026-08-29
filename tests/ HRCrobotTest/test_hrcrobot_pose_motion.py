@@ -9,24 +9,27 @@
         2. 移动后位姿回读（闭环位置精度）
         3. 返回起点（往返精度）
         4. 停止后位姿保持（验证"无 buffer"语义的物理表现）
-        5. 旋转移动后的位姿回读
-
     适配层（HRCrobot.py 完整栈，含 TaskFrame/rotvec 契约）：
-        6. TaskFrame 系下的观测-动作-回读全链路
-        7. 缺失轴由 task_frame.target 安全补齐的语义
+        5. TaskFrame 系下的观测-动作-回读全链路
+        6. 缺失轴由 task_frame.target 安全补齐的语义
 
 安全设计（所有移动测试共用）：
     - 每个测试进入时快照当前位姿，移动幅度默认 2mm
       （可用 HRC_TEST_MOVE_MM 覆盖，硬上限 5mm）
     - 单轴移动时其余 5 轴用快照值锁定
     - 步长 ≤ 0.2mm/拍，流式下发
-    - fixture teardown 无条件流式返回起点并校验
+    - 必须显式确认 observation/action 的姿态表示契约
+    - 全套测试共用一个控制器连接，禁止同机双连接
+    - rotation vector 按 SO(3) 插值，每拍不超过 0.2°
+    - teardown 只断开连接，不在异常状态下自动运动
     - 绝对迭代上限 + 墙钟超时
 
 运行（上使能后）：
 
     cd /home/gm/SHaReRL/share-rl
-    HRC_TEST_LIVE=1 HRC_TEST_MOVE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \\
+    HRC_TEST_LIVE=1 HRC_TEST_MOVE=1 \\
+    HRC_TEST_ACK_POSE_CONTRACT=rotvec-observation_euler-action \\
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \\
         /home/gm/anaconda3/envs/lerobot/bin/python -m pytest \\
         "tests/ HRCrobotTest/test_hrcrobot_pose_motion.py" -v -s -p no:cacheprovider
 
@@ -61,17 +64,24 @@ from share.envs.manipulation_primitive.task_frame import TaskFrame  # noqa: E402
 # ------------------------------------------------------------
 
 LIVE = os.environ.get("HRC_TEST_LIVE") == "1"
-MOVE = LIVE and os.environ.get("HRC_TEST_MOVE") == "1"
+POSE_CONTRACT_ACK = "rotvec-observation_euler-action"
+MOVE = (
+    LIVE
+    and os.environ.get("HRC_TEST_MOVE") == "1"
+    and os.environ.get("HRC_TEST_ACK_POSE_CONTRACT") == POSE_CONTRACT_ACK
+)
 
 ROBOT_IP = os.environ.get("HRC_ROBOT_IP", "10.10.59.211")
 
 MOVE_MM = float(os.environ.get("HRC_TEST_MOVE_MM", "2.0"))
-MOVE_MM = min(MOVE_MM, 5.0)              # 硬上限 5mm
+if not 0.0 < MOVE_MM <= 5.0:
+    raise ValueError("HRC_TEST_MOVE_MM must be in (0, 5].")
 MOVE_M = MOVE_MM / 1000.0
 
 STEP_M = 0.0002                          # 每拍 ≤ 0.2mm
+STEP_ROT_RAD = math.radians(0.2)         # 每拍 ≤ 0.2°
 STREAM_PERIOD_S = 0.02                   # 拍间隔 20ms（servo 内部还会限到 10ms）
-REACHED_TOL_M = 0.0005                   # 到位判定 0.5mm
+REACHED_TOL_M = 0.0002                   # 到位判定 0.2mm
 LOCKED_AXIS_TOL_M = 0.001                # 锁定轴漂移上限 1mm
 RETURN_TOL_M = 0.0005                    # 返回起点判定 0.5mm
 MAX_STEPS = 200                          # 单段流式绝对上限
@@ -81,7 +91,10 @@ AXES = ["x", "y", "z", "rx", "ry", "rz"]
 
 skip_if_not_move = pytest.mark.skipif(
     not MOVE,
-    reason="运动测试需要 HRC_TEST_LIVE=1 且 HRC_TEST_MOVE=1",
+    reason=(
+        "运动测试需要 HRC_TEST_LIVE=1、HRC_TEST_MOVE=1，且 "
+        f"HRC_TEST_ACK_POSE_CONTRACT={POSE_CONTRACT_ACK}"
+    ),
 )
 
 
@@ -95,6 +108,24 @@ def rotation_error_rad(rotvec_a: list[float], rotvec_b: list[float]) -> float:
     rot_a = Rotation.from_rotvec(rotvec_a)
     rot_b = Rotation.from_rotvec(rotvec_b)
     return float((rot_a.inv() * rot_b).magnitude())
+
+
+def step_rotvec_toward(
+    current_rotvec: list[float],
+    target_rotvec: list[float],
+    max_step_rad: float = STEP_ROT_RAD,
+) -> list[float]:
+    """Take one bounded SO(3) step instead of interpolating rotvec components."""
+    current_rotation = Rotation.from_rotvec(current_rotvec)
+    target_rotation = Rotation.from_rotvec(target_rotvec)
+    relative_rotation = target_rotation * current_rotation.inv()
+    relative_angle = float(relative_rotation.magnitude())
+    if relative_angle <= max_step_rad:
+        return target_rotation.as_rotvec().tolist()
+    step_rotation = Rotation.from_rotvec(
+        relative_rotation.as_rotvec() * (max_step_rad / relative_angle)
+    )
+    return (step_rotation * current_rotation).as_rotvec().tolist()
 
 
 def stream_to(
@@ -119,23 +150,10 @@ def stream_to(
 
         # 按比例截断步长
         scale = min(1.0, STEP_M / dist) if dist > 0 else 1.0
-        rot_scale = (
-            min(1.0, math.radians(0.2) / rot_err)
-            if rot_err > 0
-            else 1.0
-        )
-
         waypoint = [
             current[i] + delta[i] * scale
             for i in range(3)
-        ] + [
-            current[3 + i]
-            + (
-                (target[3 + i] - current[3 + i])
-                * rot_scale
-            )
-            for i in range(3)
-        ]
+        ] + step_rotvec_toward(current[3:], target[3:])
 
         controller.servo_cartesian(waypoint)
         time.sleep(STREAM_PERIOD_S)
@@ -167,7 +185,7 @@ def assert_pose_close(
 
 
 # ------------------------------------------------------------
-# fixture：连接 + 无条件返回起点
+# fixture：全套测试只建立一个连接
 # ------------------------------------------------------------
 
 
@@ -175,7 +193,7 @@ def assert_pose_close(
 def motion_controller():
     if not MOVE:
         pytest.skip(
-            "需要 HRC_TEST_LIVE=1 且 HRC_TEST_MOVE=1"
+            "缺少真机运动开关或姿态契约确认"
         )
 
     controller = HRCrobotController(
@@ -183,7 +201,11 @@ def motion_controller():
         frequency=100.0,
     )
     controller.connect()
-    controller._motion_start_pose = controller.get_tcp_pose()
+    try:
+        controller._motion_start_pose = controller.get_tcp_pose()
+    except Exception:
+        controller.disconnect()
+        raise
     print(
         "\n[fixture] 起始位姿:",
         [round(v, 4) for v in controller._motion_start_pose],
@@ -191,21 +213,9 @@ def motion_controller():
 
     yield controller
 
-    # teardown：无条件流式返回本模块开始时的位姿
-    try:
-        print("\n[fixture] 返回起始位姿 ...")
-        stream_to(controller, controller._motion_start_pose)
-        final = controller.get_tcp_pose()
-        assert_pose_close(
-            final,
-            controller._motion_start_pose,
-            RETURN_TOL_M,
-            0.5,
-            "fixture 返回起点",
-        )
-        print("[fixture] 已回到起始位姿。")
-    finally:
-        controller.disconnect()
+    # A failed native connection must never trigger another automatic move.
+    # Individual tests return before asserting; teardown only disconnects.
+    controller.disconnect()
 
 
 # ============================================================
@@ -249,6 +259,11 @@ class TestAxisMoves:
             f"{(reached[axis_index] - start[axis_index]) * 1000:+.2f}mm"
         )
 
+        # Return before evaluating assertions so an accuracy failure does not
+        # leave the robot at the test offset.
+        stream_to(controller, start)
+        back = controller.get_tcp_pose()
+
         # 移动轴到位
         assert (
             abs(
@@ -275,16 +290,13 @@ class TestAxisMoves:
 
         # 姿态锁定
         assert_pose_close(
-            reached[3:],
-            start[3:],
+            reached,
+            start,
             10.0,
             0.5,
             f"[{axis}] 姿态",
         )
 
-        # ---- 返回起点 ----
-        stream_to(controller, start)
-        back = controller.get_tcp_pose()
         assert_pose_close(
             back,
             start,
@@ -339,11 +351,11 @@ class TestStopHold:
             f"{drift * 1000:.2f}mm"
         )
 
+        stream_to(controller, start)
+
         assert drift <= 0.001, (
             f"停止后漂移 {drift * 1000:.2f}mm 超过 1mm"
         )
-
-        stream_to(controller, start)
 
 
 # ============================================================
@@ -360,18 +372,11 @@ class TestHRCrobotFullStackMotion:
     """
 
     @pytest.fixture()
-    def full_stack_robot(self):
+    def full_stack_robot(self, motion_controller):
+        """Wrap the module's sole live connection; never open a second client."""
         robot = HRCrobot(HRCrobotConfig())
-        robot.connect()
+        robot.controller = motion_controller
         yield robot
-        robot.disconnect()
-
-    def _snapshot(self, robot) -> list[float]:
-        obs = robot.get_observation()
-        return [
-            obs[f"{axis}.ee_pos"]
-            for axis in AXES
-        ]
 
     def _stream_action(
         self,
@@ -379,7 +384,10 @@ class TestHRCrobotFullStackMotion:
         target_task: list[float],
         max_steps: int = MAX_STEPS,
     ) -> None:
-        """经 send_action 流式逼近 task 系目标（全 6D 动作）。"""
+        """Move xyz while TaskFrame target safely holds the Euler orientation."""
+        target_task_rotvec = Rotation.from_euler(
+            "xyz", target_task[3:], degrees=False
+        ).as_rotvec()
         for _ in range(max_steps):
             obs = robot.get_observation()
             current = [
@@ -396,19 +404,34 @@ class TestHRCrobotFullStackMotion:
             dist = math.sqrt(
                 sum(d * d for d in delta[:3])
             )
+            rot_err = rotation_error_rad(
+                current[3:], target_task_rotvec.tolist()
+            )
+
+            if rot_err > math.radians(0.5):
+                raise RuntimeError(
+                    "TaskFrame orientation drifted by "
+                    f"{math.degrees(rot_err):.3f} deg; refusing further motion."
+                )
 
             if dist < REACHED_TOL_M:
                 return
 
             scale = min(1.0, STEP_M / dist)
 
+            # Do not replay rotvec observation channels as Euler actions.
+            # Missing rotation axes are held by task_frame.target (Euler).
             action = {
                 f"{AXES[i]}.ee_pos": current[i]
                 + delta[i] * scale
-                for i in range(6)
+                for i in range(3)
             }
             robot.send_action(action)
             time.sleep(STREAM_PERIOD_S)
+
+        raise RuntimeError(
+            "Full-stack translation did not converge within MAX_STEPS."
+        )
 
     def test_task_frame_observation_and_move(
         self,
@@ -420,26 +443,23 @@ class TestHRCrobotFullStackMotion:
         """
         robot = full_stack_robot
 
-        first = robot.get_observation()
-        start_base = [
-            first[f"{axis}.ee_pos"]
-            for axis in AXES
-        ]
+        start_base = robot.controller.get_tcp_pose()
         print(
             "\n[fullstack] 起始 base 位姿:",
             [round(v, 4) for v in start_base],
         )
 
-        # origin 锚定当前位姿，旋转恒等
+        # TaskFrame stores Euler XYZ, while the controller snapshot is rotvec.
+        start_rpy = Rotation.from_rotvec(start_base[3:]).as_euler(
+            "xyz", degrees=False
+        ).tolist()
         robot.set_task_frame(
             TaskFrame(
                 origin=[
                     start_base[0],
                     start_base[1],
                     start_base[2],
-                    0.0,
-                    0.0,
-                    0.0,
+                    *start_rpy,
                 ],
                 target=[0.0] * 6,
             )
@@ -476,6 +496,10 @@ class TestHRCrobotFullStackMotion:
             f"z = {obs_end['z.ee_pos'] * 1000:.2f}mm"
         )
 
+        # Return before checking endpoint accuracy.
+        self._stream_action(robot, [0.0] * 6)
+        obs_back = robot.get_observation()
+
         assert (
             obs_end["z.ee_pos"]
             == pytest.approx(target_z, abs=REACHED_TOL_M)
@@ -489,9 +513,6 @@ class TestHRCrobotFullStackMotion:
                 f"{obs_end[f'{axis}.ee_pos'] * 1000:.2f}mm"
             )
 
-        # 返回起点（task 系目标 0）
-        self._stream_action(robot, [0.0] * 6)
-        obs_back = robot.get_observation()
         assert (
             abs(obs_back["z.ee_pos"])
             <= RETURN_TOL_M
@@ -511,19 +532,16 @@ class TestHRCrobotFullStackMotion:
         """
         robot = full_stack_robot
 
-        first = robot.get_observation()
-        start_base = [
-            first[f"{axis}.ee_pos"]
-            for axis in AXES
-        ]
+        start_base = robot.controller.get_tcp_pose()
+        start_rpy = Rotation.from_rotvec(start_base[3:]).as_euler(
+            "xyz", degrees=False
+        ).tolist()
 
         origin = [
             start_base[0],
             start_base[1],
             start_base[2],
-            0.0,
-            0.0,
-            0.0,
+            *start_rpy,
         ]
 
         # target = 当前位姿（task 系全零）
@@ -536,11 +554,12 @@ class TestHRCrobotFullStackMotion:
         )
 
         # 只发 z：爬升 +2mm
-        for _ in range(int(MOVE_M / STEP_M)):
+        move_steps = math.ceil(MOVE_M / STEP_M)
+        for step in range(move_steps):
             robot.send_action(
                 {"z.ee_pos": min(
                     STEP_M
-                    * (_ + 1),
+                    * (step + 1),
                     MOVE_M,
                 )}
             )
@@ -556,6 +575,23 @@ class TestHRCrobotFullStackMotion:
             f"y = {obs['y.ee_pos'] * 1000:+.2f}mm"
         )
 
+        # 返回：单轴下发 z=0（其余轴仍由 target=0 补齐锁定）
+        for step in range(move_steps):
+            robot.send_action(
+                {
+                    "z.ee_pos": max(
+                        MOVE_M
+                        - STEP_M
+                        * (step + 1),
+                        0.0,
+                    )
+                }
+            )
+            time.sleep(STREAM_PERIOD_S)
+
+        time.sleep(0.3)
+        obs_back = robot.get_observation()
+
         assert obs["z.ee_pos"] == pytest.approx(
             MOVE_M, abs=REACHED_TOL_M
         )
@@ -568,23 +604,15 @@ class TestHRCrobotFullStackMotion:
                 f"{obs[f'{axis}.ee_pos'] * 1000:.2f}mm "
                 "—— target 补齐语义未生效？"
             )
+        observed_rotvec = [
+            obs[f"{axis}.ee_pos"] for axis in ("rx", "ry", "rz")
+        ]
+        assert rotation_error_rad(
+            observed_rotvec, [0.0, 0.0, 0.0]
+        ) <= math.radians(0.5), (
+            "只下发 z 时 TaskFrame 姿态漂移超过 0.5°"
+        )
 
-        # 返回：单轴下发 z=0（其余轴仍由 target=0 补齐锁定）
-        for _ in range(int(MOVE_M / STEP_M)):
-            robot.send_action(
-                {
-                    "z.ee_pos": max(
-                        MOVE_M
-                        - STEP_M
-                        * (_ + 1),
-                        0.0,
-                    )
-                }
-            )
-            time.sleep(STREAM_PERIOD_S)
-
-        time.sleep(0.3)
-        obs_back = robot.get_observation()
         assert (
             abs(obs_back["z.ee_pos"])
             <= RETURN_TOL_M

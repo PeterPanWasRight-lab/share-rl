@@ -220,3 +220,29 @@ def test_observation_rotvec_round_trips_through_action_to_same_vendor_pose() -> 
     # 3. 到达控制器的厂商位姿应与当前位姿一致（"保持不动"）。
     assert len(controller.servo_calls) == 1
     np.testing.assert_allclose(controller.servo_calls[0], controller.tcp_pose, atol=1e-9)
+
+
+def test_send_action_rejects_rotvec_observation_replayed_as_euler() -> None:
+    """The adapter must stop the exact representation mix-up seen on hardware."""
+    robot, controller = _robot()
+    controller.tcp_pose = [0.48, -0.10, 0.12, 0.0031, -2.7338, -1.5464]
+
+    observation = robot.get_observation()
+    unsafe_replay = {
+        f"{axis}.ee_pos": observation[f"{axis}.ee_pos"]
+        for axis in TASK_FRAME_AXIS_NAMES
+    }
+
+    with pytest.raises(ValueError, match="Unsafe HRCrobot Cartesian command: rotation step"):
+        robot.send_action(unsafe_replay)
+
+    assert controller.servo_calls == []
+
+
+def test_send_action_rejects_discontinuous_translation() -> None:
+    robot, controller = _robot()
+
+    with pytest.raises(ValueError, match="translation step"):
+        robot.send_action({"x.ee_pos": 0.050})
+
+    assert controller.servo_calls == []

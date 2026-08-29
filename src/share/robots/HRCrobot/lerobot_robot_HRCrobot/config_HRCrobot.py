@@ -38,6 +38,11 @@ class HRCrobotConfig(RobotConfig):
     # move_to_cartesian_position 按此周期限频。
     frequency: float = 100.0
 
+    # Per-command safety envelope.  HRCrobot uses absolute Cartesian
+    # setpoints, so reject discontinuous targets before they reach the SDK.
+    max_cartesian_step_m: float = 0.005
+    max_rotation_step_rad: float = 0.03490658503988659  # 2 degrees
+
     # ============================================================
     # Gripper
     # ============================================================
@@ -65,6 +70,10 @@ class HRCrobotConfig(RobotConfig):
         super().__post_init__()
         if self.frequency <= 0.0:
             raise ValueError("HRCrobotConfig.frequency must be positive.")
+        if self.max_cartesian_step_m <= 0.0:
+            raise ValueError("HRCrobotConfig.max_cartesian_step_m must be positive.")
+        if self.max_rotation_step_rad <= 0.0:
+            raise ValueError("HRCrobotConfig.max_rotation_step_rad must be positive.")
         if not 0.0 <= self.gripper_threshold <= 1.0:
             raise ValueError("HRCrobotConfig.gripper_threshold must be in [0, 1].")
         if self.gripper_min_command_interval_s < 0.0:

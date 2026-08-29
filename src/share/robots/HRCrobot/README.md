@@ -103,6 +103,12 @@ robot.send_action({
 })
 ```
 
+`send_action()` 的 TaskFrame 姿态目标是 extrinsic XYZ Euler（rad），而
+`get_observation()` 的 `rx/ry/rz.ee_pos` 是 rotation vector（rad）。不要把姿态观测
+原样作为绝对动作回放；应先转换为 Euler。适配器会在下发 SDK 前检查相邻绝对目标，
+默认拒绝超过 5 mm 或 2° 的单步命令。阈值可通过
+`HRCrobotConfig.max_cartesian_step_m` 和 `max_rotation_step_rad` 收紧。
+
 内部链路：task→base 换算 → `servo_cartesian` 限频 → SDK 流式 `move_to_cartesian_position`。
 
 ### set_task_frame(frame)

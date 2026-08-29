@@ -1,4 +1,5 @@
 import copy
+import math
 from functools import cached_property
 from typing import Any
 
@@ -443,6 +444,36 @@ class HRCrobot(Robot):
                     world_pose
                 )
             )
+
+            # Absolute Cartesian commands must remain locally continuous.
+            # This guard is deliberately at the hardware adapter boundary:
+            # confusing TaskFrame Euler actions with rotvec observations must
+            # fail before a discontinuous pose can reach the vendor SDK.
+            current_vendor_pose = self.controller.get_tcp_pose()
+            translation_step = math.dist(
+                current_vendor_pose[:3],
+                vendor_pose[:3],
+            )
+            rotation_step = float(
+                (
+                    Rotation.from_rotvec(current_vendor_pose[3:]).inv()
+                    * Rotation.from_rotvec(vendor_pose[3:])
+                ).magnitude()
+            )
+            if translation_step > self.config.max_cartesian_step_m:
+                raise ValueError(
+                    "Unsafe HRCrobot Cartesian command: translation step "
+                    f"{translation_step * 1000.0:.2f} mm exceeds "
+                    f"{self.config.max_cartesian_step_m * 1000.0:.2f} mm."
+                )
+            if rotation_step > self.config.max_rotation_step_rad:
+                raise ValueError(
+                    "Unsafe HRCrobot Cartesian command: rotation step "
+                    f"{math.degrees(rotation_step):.2f} deg exceeds "
+                    f"{math.degrees(self.config.max_rotation_step_rad):.2f} deg. "
+                    "TaskFrame actions use Euler XYZ radians; *.ee_pos "
+                    "observations use rotation vectors."
+                )
 
             # ----------------------------------------------------
             # 真正 servo
