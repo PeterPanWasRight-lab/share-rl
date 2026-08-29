@@ -11,9 +11,12 @@ from lerobot.utils.errors import (
 )
 
 from share.envs.manipulation_primitive.task_frame import (
+    ControlMode,
+    ControlSpace,
     TASK_FRAME_AXIS_NAMES,
     TaskFrame,
 )
+from share.robots.gripper_command_limiter import GripperCommandLimiter
 
 from share.utils.transformation_utils import (
     task_pose_to_world_pose,
@@ -64,7 +67,9 @@ class HRCrobot(Robot):
             target=[0.0] * 6,
         )
 
-        self._last_gripper_command = None
+        self._gripper_command_limiter = GripperCommandLimiter(
+            min_interval_s=config.gripper_min_command_interval_s
+        )
 
     # ============================================================
     # Feature definitions
@@ -109,10 +114,7 @@ class HRCrobot(Robot):
         当前只支持 task-space position command。
         """
 
-        features = {
-            f"{axis}.ee_pos": float
-            for axis in TASK_FRAME_AXIS_NAMES
-        }
+        features = self.task_frame.action_feature_keys()
 
         if self.config.use_gripper:
             features["gripper.pos"] = float
@@ -192,9 +194,12 @@ class HRCrobot(Robot):
         真正运动只允许发生在 send_action()。
         """
 
-        self.task_frame = copy.deepcopy(
-            new_task_frame
-        )
+        if ControlSpace(new_task_frame.space) != ControlSpace.TASK:
+            raise ValueError("HRCrobot currently supports task-space control only.")
+        if any(ControlMode(mode) != ControlMode.POS for mode in new_task_frame.control_mode):
+            raise ValueError("HRCrobot currently supports task-space POS control only.")
+
+        self.task_frame = copy.deepcopy(new_task_frame)
 
     # ============================================================
     # Vendor pose <-> SHaRe pose
@@ -342,6 +347,17 @@ class HRCrobot(Robot):
             self.task_frame.origin,
         )
 
+        # Match the UR RTDE and MuJoCo observation contract. TaskFrame stores
+        # orientations as XYZ Euler angles, while ``*.ee_pos`` observations use
+        # a rotation vector so one policy sees the same representation in sim
+        # and on hardware.
+        task_rotvec = Rotation.from_euler(
+            "xyz",
+            task_pose[3:6],
+            degrees=False,
+        ).as_rotvec()
+        observation_pose = [*task_pose[:3], *task_rotvec.tolist()]
+
         observation: dict[str, Any] = {}
 
         for i, axis in enumerate(
@@ -350,7 +366,7 @@ class HRCrobot(Robot):
             observation[
                 f"{axis}.ee_pos"
             ] = float(
-                task_pose[i]
+                observation_pose[i]
             )
 
         if self.config.use_gripper:
@@ -440,30 +456,20 @@ class HRCrobot(Robot):
         # Gripper
         # ========================================================
 
+        executed_action = dict(action)
+
         if (
             self.config.use_gripper
             and "gripper.pos" in action
         ):
-            gripper_cmd = float(
-                action["gripper.pos"]
+            gripper_cmd, should_send = self._gripper_command_limiter.filter(
+                float(action["gripper.pos"])
             )
+            executed_action["gripper.pos"] = gripper_cmd
 
-            # 夹爪没必要像 servoL 一样重复发送。
-            #
-            # 只有目标发生变化时才发。
-            if (
-                self._last_gripper_command is None
-                or abs(
-                    gripper_cmd
-                    - self._last_gripper_command
-                ) > 1e-6
-            ):
+            if should_send:
                 self.controller.set_gripper(
                     gripper_cmd
                 )
 
-                self._last_gripper_command = (
-                    gripper_cmd
-                )
-
-        return action
+        return executed_action

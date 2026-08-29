@@ -52,6 +52,7 @@ class HRCrobotConfig(RobotConfig):
     gripper_open: float = 0.0
     gripper_close: float = 1.0
     gripper_threshold: float = 0.5
+    gripper_min_command_interval_s: float = 0.5
 
     # ============================================================
     # Cameras
@@ -59,3 +60,14 @@ class HRCrobotConfig(RobotConfig):
 
     # 第一阶段不用相机
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.frequency <= 0.0:
+            raise ValueError("HRCrobotConfig.frequency must be positive.")
+        if not 0.0 <= self.gripper_threshold <= 1.0:
+            raise ValueError("HRCrobotConfig.gripper_threshold must be in [0, 1].")
+        if self.gripper_min_command_interval_s < 0.0:
+            raise ValueError(
+                "HRCrobotConfig.gripper_min_command_interval_s must be non-negative."
+            )

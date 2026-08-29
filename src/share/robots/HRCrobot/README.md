@@ -51,6 +51,7 @@ robot.disconnect()
 | `frequency`         | `100.0`          | 运动指令下发频率（Hz），见「限频机制」  |
 | `use_gripper`       | `True`           | 是否启用夹爪链路；`False` 时不连 HSC3 |
 | `gripper_threshold` | `0.5`            | ≥0.5 判闭合，<0.5 判打开               |
+| `gripper_min_command_interval_s` | `0.5` | 夹爪目标变化的最小下发间隔，与 MuJoCo/UR 一致 |
 | `cameras`           | `{}`             | 暂未使用                                |
 
 ## 接口列表
@@ -83,7 +84,7 @@ robot.disconnect()
 {'x.ee_pos': 0.050,   # TCP 相对任务原点，米
  'y.ee_pos': -0.020,
  'z.ee_pos': 0.015,
- 'rx.ee_pos': 0.006,  # 相对任务坐标轴姿态，rad，extrinsic XYZ
+ 'rx.ee_pos': 0.006,  # 相对任务坐标轴姿态，rotation vector，rad
  'ry.ee_pos': ..., 'rz.ee_pos': ...,
  'gripper.pos': 0.0}  # 最后一次夹爪命令值（无真实反馈）
 ```
@@ -129,6 +130,7 @@ TaskFrame
 
 - 观测 = TCP(base) 减去 origin（姿态为相对任务轴的朝向）
 - 动作 = 上层目标加上 origin，翻译回 base 系
+- TaskFrame 的姿态配置使用 extrinsic XYZ Euler；`*.ee_pos` 姿态观测使用 rotation vector，与 UR/MuJoCo 一致
 - SDK 返回的就是 base 系读数，base 是参考系本身，"世界系在哪"不可推断也无需推断
 - 切换 primitive 时机器人不动但观测值跳变（origin 换了），属设计使然；MP-Net 通过 `entry_context` 传递上一原语的 origin 保证跨切换连续性
 
@@ -170,6 +172,8 @@ TaskFrame
 3. **vendor 目录**：含备份文件（`*.so40ms` 等），SDK 更新时原样替换整个目录
 4. **未连接守卫**：所有硬件接口未连接时抛 `RuntimeError`，不静默执行
 5. **单位**：对外一律 m + rad；SDK 的 mm/度只存在于 controller 内部
+
+仿真迁移时的边界和标定清单见 [SIM_ALIGNMENT.md](SIM_ALIGNMENT.md)。
 
 ## 相关文件
 
